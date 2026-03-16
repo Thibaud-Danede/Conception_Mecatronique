@@ -92,6 +92,7 @@ void startRobotBridgeProcess() {
 }
 
 public void dispose() {
+  closeForceSensorPort();
   stopRobotBridgeProcess();
 }
 

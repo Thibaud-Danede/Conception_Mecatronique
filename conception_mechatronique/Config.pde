@@ -10,3 +10,13 @@ float bridgeMotionSpeed = 12.0;
 boolean bridgeAutoStartEnabled = true;
 String bridgeExecutableRelativePath = "RobotPoseBridge/bin/Debug/RobotPoseBridge.exe";
 String bridgeCommandFileName = "robot_command.csv";
+
+// ===== Capteur HX711 / ESP32 =====
+String forceSensorComPort = "COM4";
+int forceSensorBaudRate = 115200;
+boolean forceSensorAutoConnectOnManualTab = true;
+int forceSensorPollIntervalMs = 250;
+int forceSensorWarmupDelayMs = 1800;
+int forceSensorDataTimeoutMs = 1500;
+int forceSensorMaxLinesPerUpdate = 12;
+int forceSensorMaxBufferedBytes = 2048;
