@@ -30,6 +30,7 @@ int lastRobotUpdateMs = -1;
 Process robotBridgeProcess = null;
 String bridgeLaunchStatus = "not started";
 String bridgeExePath = "";
+String bridgeLogPath = "";
 String bridgeCommandStatus = "idle";
 int bridgeCommandSequence = 0;
 boolean bridgeReconnectInProgress = false;
@@ -47,6 +48,7 @@ void setupRobotBridge() {
 
 void setupLocalRobotBridge() {
   bridgeExePath = sketchPath(bridgeExecutableRelativePath);
+  bridgeLogPath = sketchPath("bridge_launch.log");
   robotPollIntervalMs = bridgeLaunchPollMs;
   registerMethod("dispose", this);
 
@@ -71,6 +73,7 @@ void startRobotBridgeProcess() {
   }
 
   try {
+    resetBridgeLogFile();
     String[] command = {
       bridgeExePath,
       "--ip", bridgeTargetIp,
@@ -81,6 +84,7 @@ void startRobotBridgeProcess() {
     };
     ProcessBuilder builder = new ProcessBuilder(command);
     builder.redirectErrorStream(true);
+    builder.redirectOutput(new File(bridgeLogPath));
     robotBridgeProcess = builder.start();
     bridgeLaunchStatus = bridgeReconnectInProgress
       ? "bridge reconnect started"
@@ -169,13 +173,29 @@ void clearBridgeRuntimeState() {
 
 void updateRobotBridge() {
   if (millis() - lastRobotPollMs < robotPollIntervalMs) {
+    refreshBridgeProcessStatus();
     updateReconnectState();
     return;
   }
 
   lastRobotPollMs = millis();
+  refreshBridgeProcessStatus();
   loadRobotPoseFromBridge();
   updateReconnectState();
+}
+
+void refreshBridgeProcessStatus() {
+  if (robotBridgeProcess == null || robotBridgeProcess.isAlive()) {
+    return;
+  }
+
+  int exitCode = robotBridgeProcess.exitValue();
+  String logTail = readBridgeLogTail();
+  bridgeLaunchStatus = "bridge exited (" + exitCode + ")";
+  if (logTail.length() > 0) {
+    bridgeLaunchStatus += ": " + logTail;
+  }
+  robotBridgeProcess = null;
 }
 
 void updateReconnectState() {
@@ -525,5 +545,41 @@ String getBridgeRuntimeStatus() {
     return "running";
   }
 
-  return "stopped";
+  return bridgeLaunchStatus.length() > 0 ? bridgeLaunchStatus : "stopped";
+}
+
+void resetBridgeLogFile() {
+  if (bridgeLogPath.length() == 0) {
+    return;
+  }
+
+  File logFile = new File(bridgeLogPath);
+  if (logFile.exists()) {
+    logFile.delete();
+  }
+}
+
+String readBridgeLogTail() {
+  if (bridgeLogPath.length() == 0) {
+    return "";
+  }
+
+  File logFile = new File(bridgeLogPath);
+  if (!logFile.exists()) {
+    return "";
+  }
+
+  String[] lines = loadStrings(bridgeLogPath);
+  if (lines == null || lines.length == 0) {
+    return "";
+  }
+
+  for (int i = lines.length - 1; i >= 0; i--) {
+    String cleanLine = trim(lines[i]);
+    if (cleanLine.length() > 0) {
+      return cleanLine;
+    }
+  }
+
+  return "";
 }
