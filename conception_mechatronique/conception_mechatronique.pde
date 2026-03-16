@@ -1,4 +1,5 @@
 import java.io.File;
+import processing.serial.*;
 
 float[] joints = {0, 0, 0, 0, 0, 0};
 String[] names = {"J1: Base", "J2: Epaule", "J3: Coude", "J4: Poignet 1", "J5: Poignet 2", "J6: Poignet 3"};
@@ -9,13 +10,17 @@ void setup() {
   size(900, 600);
   surface.setResizable(true);
   textAlign(LEFT, CENTER);
+
   setupRobotBridge();
   setupMgiUi();
+  setupForceSensor();
 }
 
 void draw() {
   background(25);
+
   updateRobotBridge();
+  updateForceSensor();
   cursor(ARROW);
 
   drawHeader();
@@ -157,6 +162,12 @@ void drawFooter() {
 void mousePressed() {
   if (handleHeaderMousePressed(mouseX, mouseY)) {
     return;
+  }
+
+  if (menus == 2) {
+    if (handleForceSensorMousePressed(mouseX, mouseY)) {
+      return;
+    }
   }
 
   if (menus == 1) {
