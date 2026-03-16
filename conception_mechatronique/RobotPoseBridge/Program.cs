@@ -15,6 +15,8 @@ namespace RobotPoseBridge
             string poseFilePath = GetArgument(args, "--pose-file", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "robot_pose.csv"));
             string commandFilePath = GetArgument(args, "--command-file", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "robot_command.csv"));
             int pollMs = GetIntArgument(args, "--poll-ms", 200);
+            float motionSpeed = GetFloatArgument(args, "--motion-speed", 3.0F);
+            var bridgeState = new BridgeState();
 
             Directory.CreateDirectory(Path.GetDirectoryName(poseFilePath));
             Directory.CreateDirectory(Path.GetDirectoryName(commandFilePath));
@@ -27,39 +29,51 @@ namespace RobotPoseBridge
             };
 
             var robot = new Robot();
-            bool connected = false;
+            bool transportConnected = false;
             int lastProcessedSequence = GetLatestCommandSequence(commandFilePath);
 
             while (!shouldStop)
             {
                 try
                 {
-                    if (!connected)
+                    if (!transportConnected)
                     {
-                        connected = robot.Create(robotIp);
-                        if (!connected)
+                        transportConnected = robot.Create(robotIp);
+                        if (!transportConnected)
                         {
-                            WritePoseFile(poseFilePath, false, robotIp, null, null);
+                            bridgeState.MarkDisconnected("disconnected");
+                            WritePoseFile(poseFilePath, false, robotIp, null, null, bridgeState);
                             Thread.Sleep(pollMs);
                             continue;
                         }
+
+                        ConfigureRobotSession(robot, bridgeState);
                     }
 
-                    float[] joints = robot.GetCurrentJoint().Take(6).ToArray();
-                    float[] cartesian = robot.GetCurrentPosition().ToArray();
-                    WritePoseFile(poseFilePath, true, robotIp, joints, cartesian);
+                    float[] joints;
+                    float[] cartesian;
+                    transportConnected = TryReadRobotTelemetry(bridgeState, out joints, out cartesian);
+                    WritePoseFile(poseFilePath, transportConnected, robotIp, joints, cartesian, bridgeState);
+                    if (!transportConnected)
+                    {
+                        Thread.Sleep(pollMs);
+                        continue;
+                    }
 
                     RobotCommand command;
                     if (TryReadCommand(commandFilePath, lastProcessedSequence, out command))
                     {
-                        ExecuteCommand(robot, command);
+                        ExecuteCommand(robot, command, bridgeState, motionSpeed);
                         lastProcessedSequence = command.Sequence;
+                        WritePoseFile(poseFilePath, transportConnected, robotIp, joints, cartesian, bridgeState);
                     }
                 }
                 catch
                 {
-                    connected = false;
-                    WritePoseFile(poseFilePath, false, robotIp, null, null);
+                    transportConnected = false;
+                    bridgeState.MarkDisconnected("bridge read error");
+                    bridgeState.CommandStatus = "bridge error";
+                    WritePoseFile(poseFilePath, false, robotIp, null, null, bridgeState);
                 }
 
                 Thread.Sleep(pollMs);
@@ -68,24 +82,206 @@ namespace RobotPoseBridge
             return 0;
         }
 
-        private static void ExecuteCommand(Robot robot, RobotCommand command)
+        private static void ConfigureRobotSession(Robot robot, BridgeState bridgeState)
+        {
+            bridgeState.LastSimulationDisableRet = XArmAPI.set_simulation_robot(false);
+            bridgeState.RobotModeStatus = bridgeState.LastSimulationDisableRet == 0
+                ? "real requested"
+                : $"real unavailable (simulation off ret {bridgeState.LastSimulationDisableRet})";
+
+            bridgeState.LastSafetyEnableRet = robot.SetSelfCollision(true);
+            bridgeState.IsSafetyReady = bridgeState.LastSafetyEnableRet == 0;
+            bridgeState.SafetyStatus = bridgeState.IsSafetyReady
+                ? "self collision enabled"
+                : $"self collision unavailable ({bridgeState.LastSafetyEnableRet})";
+
+            bridgeState.RobotStatus = "connected, checking real feedback";
+            bridgeState.IsRealModeReady = false;
+            bridgeState.ResetValidation();
+        }
+
+        private static bool TryReadRobotTelemetry(BridgeState bridgeState, out float[] joints, out float[] cartesian)
+        {
+            joints = new float[6];
+            cartesian = new float[6];
+
+            var jointBuffer = new float[7];
+            var cartesianBuffer = new float[6];
+            int state = -1;
+            int poseRet = XArmAPI.get_position(cartesianBuffer);
+            int stateRet = XArmAPI.get_state(ref state);
+
+            if (poseRet != 0 || stateRet != 0)
+            {
+                bridgeState.MarkDisconnected($"disconnected (pose {poseRet}, state {stateRet})");
+                return false;
+            }
+
+            bridgeState.RobotStatus = $"connected (state {state})";
+
+            int realJointRet = XArmAPI.get_servo_angle(jointBuffer, true);
+            if (bridgeState.LastSimulationDisableRet == 0 && realJointRet == 0)
+            {
+                bridgeState.IsRealModeReady = true;
+                bridgeState.RobotModeStatus = "real confirmed";
+                joints = jointBuffer.Take(6).ToArray();
+                cartesian = cartesianBuffer;
+                return true;
+            }
+
+            bridgeState.IsRealModeReady = false;
+            bridgeState.RobotModeStatus = bridgeState.LastSimulationDisableRet != 0
+                ? $"real unavailable (simulation off ret {bridgeState.LastSimulationDisableRet})"
+                : $"real unavailable (real joint ret {realJointRet})";
+            return true;
+        }
+
+        private static void ExecuteCommand(Robot robot, RobotCommand command, BridgeState bridgeState, float motionSpeed)
         {
             if (command == null)
             {
                 return;
             }
 
-            robot.EnableMotion(true);
-            robot.SetMode(0);
-            robot.SetState(0);
+            bridgeState.LastCommandSequence = command.Sequence;
+            bridgeState.LastCommandMode = command.Mode ?? string.Empty;
 
             if (string.Equals(command.Mode, "joints", StringComparison.OrdinalIgnoreCase))
             {
+                if (!bridgeState.IsReadyForMotion)
+                {
+                    bridgeState.CommandStatus = "joint command blocked: " + bridgeState.GetMotionBlockReason();
+                    return;
+                }
+
                 float[] jointTargets = new float[7];
                 Array.Copy(command.Values, jointTargets, Math.Min(6, command.Values.Length));
                 jointTargets[6] = 0.0F;
-                robot.MoveJointValues(jointTargets, wait: false);
+                PrepareRobotMotion(robot);
+                int moveRet = robot.MoveJointValues(jointTargets, motionSpeed, wait: false);
+                bridgeState.CommandStatus = moveRet == 0
+                    ? $"joint command #{command.Sequence} sent"
+                    : $"joint command #{command.Sequence} failed ({moveRet})";
+                return;
             }
+
+            if (string.Equals(command.Mode, "move_home", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!bridgeState.IsReadyForMotion)
+                {
+                    bridgeState.CommandStatus = "home command blocked: " + bridgeState.GetMotionBlockReason();
+                    return;
+                }
+
+                PrepareRobotMotion(robot);
+                int moveHomeRet = robot.MoveHome(motionSpeed, 0, 0, false);
+                bridgeState.CommandStatus = moveHomeRet == 0
+                    ? $"home command #{command.Sequence} sent"
+                    : $"home command #{command.Sequence} failed ({moveHomeRet})";
+                return;
+            }
+
+            if (string.Equals(command.Mode, "stop_motion", StringComparison.OrdinalIgnoreCase))
+            {
+                int stopRet = robot.SetState(4);
+                bridgeState.CommandStatus = stopRet == 0
+                    ? $"stop command #{command.Sequence} sent"
+                    : $"stop command #{command.Sequence} failed ({stopRet})";
+                return;
+            }
+
+            if (string.Equals(command.Mode, "cartesian_ik_validate", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(command.Mode, "cartesian_ik_execute", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(command.Mode, "cartesian_ik", StringComparison.OrdinalIgnoreCase))
+            {
+                bool shouldExecute = !string.Equals(command.Mode, "cartesian_ik_validate", StringComparison.OrdinalIgnoreCase);
+                ValidationResult validation = ValidateCartesianTarget(robot, command.Values, bridgeState);
+                bridgeState.ApplyValidation(validation);
+
+                if (!shouldExecute)
+                {
+                    bridgeState.CommandStatus = validation.IsValid
+                        ? $"validation #{command.Sequence} ok"
+                        : $"validation #{command.Sequence} blocked";
+                    return;
+                }
+
+                if (!validation.IsValid)
+                {
+                    bridgeState.CommandStatus = $"execute #{command.Sequence} blocked";
+                    return;
+                }
+
+                PrepareRobotMotion(robot);
+                int moveRet = robot.MoveJointValues(validation.SolvedJoints, motionSpeed, wait: false);
+                bridgeState.CommandStatus = moveRet == 0
+                    ? $"MGI execute #{command.Sequence} sent"
+                    : $"MGI execute #{command.Sequence} failed ({moveRet})";
+                return;
+            }
+
+            bridgeState.CommandStatus = $"unsupported mode #{command.Sequence}: {command.Mode}";
+        }
+
+        private static void PrepareRobotMotion(Robot robot)
+        {
+            robot.EnableMotion(true);
+            robot.SetMode(0);
+            robot.SetState(0);
+        }
+
+        private static ValidationResult ValidateCartesianTarget(Robot robot, float[] rawValues, BridgeState bridgeState)
+        {
+            var targetPose = new float[6];
+            if (rawValues != null)
+            {
+                Array.Copy(rawValues, targetPose, Math.Min(6, rawValues.Length));
+            }
+
+            var solvedAngles = new float[7];
+            int ikRet = robot.GetInverseKinematics(targetPose, solvedAngles);
+            if (ikRet != 0)
+            {
+                return ValidationResult.Invalid(targetPose, $"blocked: inverse kinematics failed ({ikRet})");
+            }
+
+            solvedAngles[6] = 0.0F;
+
+            int jointLimit = 0;
+            int jointLimitRet = XArmAPI.is_joint_limit(solvedAngles, ref jointLimit);
+            if (jointLimitRet != 0)
+            {
+                return ValidationResult.Invalid(targetPose, $"blocked: joint limit check failed ({jointLimitRet})", solvedAngles);
+            }
+
+            if (jointLimit != 0)
+            {
+                return ValidationResult.Invalid(targetPose, "blocked: joint limit reached", solvedAngles);
+            }
+
+            int tcpLimit = 0;
+            int tcpLimitRet = XArmAPI.is_tcp_limit(targetPose, ref tcpLimit);
+            if (tcpLimitRet != 0)
+            {
+                return ValidationResult.Invalid(targetPose, $"blocked: tcp limit check failed ({tcpLimitRet})", solvedAngles);
+            }
+
+            if (tcpLimit != 0)
+            {
+                return ValidationResult.Invalid(targetPose, "blocked: tcp limit reached", solvedAngles);
+            }
+
+            if (!bridgeState.IsRealModeReady)
+            {
+                return ValidationResult.Invalid(targetPose, "blocked: real robot mode not confirmed", solvedAngles);
+            }
+
+            if (!bridgeState.IsSafetyReady)
+            {
+                return ValidationResult.Invalid(targetPose, "blocked: self collision detection unavailable", solvedAngles);
+            }
+
+            return ValidationResult.Valid(targetPose, solvedAngles, "validation ok");
         }
 
         private static bool TryReadCommand(string commandFilePath, int lastProcessedSequence, out RobotCommand command)
@@ -131,10 +327,7 @@ namespace RobotPoseBridge
                 }
                 else if (string.Equals(key, "values", StringComparison.OrdinalIgnoreCase))
                 {
-                    values = parts
-                        .Skip(1)
-                        .Select(part => ParseFloat(part, 0.0F))
-                        .ToArray();
+                    values = parts.Skip(1).Select(part => ParseFloat(part, 0.0F)).ToArray();
                 }
             }
 
@@ -185,25 +378,33 @@ namespace RobotPoseBridge
             return 0;
         }
 
-        private static void WritePoseFile(string poseFilePath, bool connected, string robotIp, float[] joints, float[] cartesian)
+        private static void WritePoseFile(string poseFilePath, bool connected, string robotIp, float[] joints, float[] cartesian, BridgeState bridgeState)
         {
-            string[] lines = connected
-                ? new[]
-                {
-                    "connected,1",
-                    "timestamp," + DateTime.Now.ToString("O", CultureInfo.InvariantCulture),
-                    "ip," + robotIp,
-                    "joints," + string.Join(",", joints.Select(value => value.ToString(CultureInfo.InvariantCulture))),
-                    "cartesian," + string.Join(",", cartesian.Select(value => value.ToString(CultureInfo.InvariantCulture)))
-                }
-                : new[]
-                {
-                    "connected,0",
-                    "timestamp," + DateTime.Now.ToString("O", CultureInfo.InvariantCulture),
-                    "ip," + robotIp,
-                    "joints,0,0,0,0,0,0",
-                    "cartesian,0,0,0,0,0,0"
-                };
+            float[] jointValues = connected && bridgeState.IsRealModeReady && joints != null ? joints : new float[6];
+            float[] cartesianValues = connected && bridgeState.IsRealModeReady && cartesian != null ? cartesian : new float[6];
+
+            string[] lines = new[]
+            {
+                "connected," + (connected ? "1" : "0"),
+                "timestamp," + DateTime.Now.ToString("O", CultureInfo.InvariantCulture),
+                "ip," + robotIp,
+                "real_ready," + (bridgeState.IsRealModeReady ? "1" : "0"),
+                "safety_ready," + (bridgeState.IsSafetyReady ? "1" : "0"),
+                "joints," + string.Join(",", jointValues.Select(value => value.ToString(CultureInfo.InvariantCulture))),
+                "cartesian," + string.Join(",", cartesianValues.Select(value => value.ToString(CultureInfo.InvariantCulture))),
+                "robot_status," + bridgeState.RobotStatus,
+                "robot_mode_status," + bridgeState.RobotModeStatus,
+                "safety_status," + bridgeState.SafetyStatus,
+                "command_mode," + bridgeState.LastCommandMode,
+                "command_sequence," + bridgeState.LastCommandSequence.ToString(CultureInfo.InvariantCulture),
+                "command_status," + bridgeState.CommandStatus,
+                "validation_valid," + (bridgeState.ValidationPassed ? "1" : "0"),
+                "validation_status," + bridgeState.ValidationStatus,
+                "validation_target," + string.Join(",", bridgeState.ValidationTarget.Select(value => value.ToString(CultureInfo.InvariantCulture))),
+                "validation_joints," + string.Join(",", bridgeState.ValidationJoints.Select(value => value.ToString(CultureInfo.InvariantCulture))),
+                "ik_valid," + (bridgeState.ValidationPassed ? "1" : "0"),
+                "ik_joints," + string.Join(",", bridgeState.ValidationJoints.Select(value => value.ToString(CultureInfo.InvariantCulture)))
+            };
 
             File.WriteAllLines(poseFilePath, lines);
         }
@@ -225,6 +426,17 @@ namespace RobotPoseBridge
         {
             string rawValue = GetArgument(args, name, fallback.ToString(CultureInfo.InvariantCulture));
             if (int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedValue))
+            {
+                return parsedValue;
+            }
+
+            return fallback;
+        }
+
+        private static float GetFloatArgument(string[] args, string name, float fallback)
+        {
+            string rawValue = GetArgument(args, name, fallback.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(rawValue, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedValue))
             {
                 return parsedValue;
             }
@@ -274,6 +486,131 @@ namespace RobotPoseBridge
             public string Mode { get; set; }
 
             public float[] Values { get; set; }
+        }
+
+        private sealed class ValidationResult
+        {
+            public ValidationResult(float[] targetPose, float[] solvedJoints, bool isValid, string message)
+            {
+                TargetPose = new float[6];
+                SolvedJoints = new float[7];
+                Array.Copy(targetPose ?? new float[6], TargetPose, 6);
+                if (solvedJoints != null)
+                {
+                    Array.Copy(solvedJoints, SolvedJoints, Math.Min(7, solvedJoints.Length));
+                }
+
+                IsValid = isValid;
+                Message = message;
+            }
+
+            public float[] TargetPose { get; }
+
+            public float[] SolvedJoints { get; }
+
+            public bool IsValid { get; }
+
+            public string Message { get; }
+
+            public static ValidationResult Valid(float[] targetPose, float[] solvedJoints, string message)
+            {
+                return new ValidationResult(targetPose, solvedJoints, true, message);
+            }
+
+            public static ValidationResult Invalid(float[] targetPose, string message, float[] solvedJoints = null)
+            {
+                return new ValidationResult(targetPose, solvedJoints, false, message);
+            }
+        }
+
+        private sealed class BridgeState
+        {
+            public BridgeState()
+            {
+                CommandStatus = "idle";
+                LastCommandMode = "none";
+                LastCommandSequence = 0;
+                RobotStatus = "disconnected";
+                RobotModeStatus = "real unavailable";
+                SafetyStatus = "self collision unavailable";
+                ValidationStatus = "not validated";
+                ValidationTarget = new float[6];
+                ValidationJoints = new float[6];
+            }
+
+            public string CommandStatus { get; set; }
+
+            public string LastCommandMode { get; set; }
+
+            public int LastCommandSequence { get; set; }
+
+            public string RobotStatus { get; set; }
+
+            public string RobotModeStatus { get; set; }
+
+            public string SafetyStatus { get; set; }
+
+            public bool IsRealModeReady { get; set; }
+
+            public bool IsSafetyReady { get; set; }
+
+            public int LastSimulationDisableRet { get; set; }
+
+            public int LastSafetyEnableRet { get; set; }
+
+            public bool ValidationPassed { get; set; }
+
+            public string ValidationStatus { get; set; }
+
+            public float[] ValidationTarget { get; }
+
+            public float[] ValidationJoints { get; }
+
+            public bool IsReadyForMotion
+            {
+                get { return IsRealModeReady && IsSafetyReady; }
+            }
+
+            public void ResetValidation()
+            {
+                ValidationPassed = false;
+                ValidationStatus = "not validated";
+                Array.Clear(ValidationTarget, 0, ValidationTarget.Length);
+                Array.Clear(ValidationJoints, 0, ValidationJoints.Length);
+            }
+
+            public void ApplyValidation(ValidationResult validation)
+            {
+                ValidationPassed = validation.IsValid;
+                ValidationStatus = validation.Message;
+                Array.Copy(validation.TargetPose, ValidationTarget, ValidationTarget.Length);
+                for (int i = 0; i < ValidationJoints.Length; i++)
+                {
+                    ValidationJoints[i] = validation.SolvedJoints[i];
+                }
+            }
+
+            public void MarkDisconnected(string status)
+            {
+                RobotStatus = status;
+                RobotModeStatus = "real unavailable";
+                IsRealModeReady = false;
+            }
+
+            public string GetMotionBlockReason()
+            {
+                if (!IsRealModeReady)
+                {
+                    return "real robot mode not confirmed";
+                }
+
+                if (!IsSafetyReady)
+                {
+                    return "self collision detection unavailable";
+                }
+
+                return "robot unavailable";
+            }
         }
     }
 }

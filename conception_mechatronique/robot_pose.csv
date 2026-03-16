@@ -1,5 +1,19 @@
 connected,1
-timestamp,2026-03-16T12:53:06.5080546+01:00
+timestamp,2026-03-16T15:56:24.8013091+01:00
 ip,192.168.1.227
-joints,0.7058868,-0.0002197266,-0.0004394531,-0.001977539,-0.002636719,0.0001098633
-cartesian,206.9977,2.552974,25.00547,4.992525E-06,-0.003295899,0.7077545
+real_ready,1
+safety_ready,1
+joints,0.001208496,-0.001538086,0.003295898,0.0008789063,0.006921387,-0.007800293
+cartesian,207,4.705705E-14,25,5.008956E-06,0,8.827813E-32
+robot_status,connected (state 4)
+robot_mode_status,real confirmed
+safety_status,self collision enabled
+command_mode,stop_motion
+command_sequence,7
+command_status,stop command #7 sent
+validation_valid,1
+validation_status,validation ok
+validation_target,207,0,25,45,0,0
+validation_joints,-42.62502,40.21901,-35.08436,-128.4857,-41.65807,84.31426
+ik_valid,1
+ik_joints,-42.62502,40.21901,-35.08436,-128.4857,-41.65807,84.31426

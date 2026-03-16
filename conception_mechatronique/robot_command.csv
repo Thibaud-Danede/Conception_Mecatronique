@@ -1,4 +1,4 @@
-sequence,2
-timestamp,2026-03-16T12:53:00
-mode,joints
-values,0.70588684,-2.197266E-4,-4.394531E-4,-0.001977539,-0.002636719,1.098633E-4
+sequence,7
+timestamp,2026-03-16T15:56:23
+mode,stop_motion
+values,0.0,0.0,0.0,0.0,0.0,0.0
