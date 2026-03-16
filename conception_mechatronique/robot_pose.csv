@@ -1,19 +1,19 @@
-connected,1
-timestamp,2026-03-16T15:56:24.8013091+01:00
+connected,0
+timestamp,2026-03-16T17:01:06.9464647+01:00
 ip,192.168.1.227
-real_ready,1
-safety_ready,1
-joints,0.001208496,-0.001538086,0.003295898,0.0008789063,0.006921387,-0.007800293
-cartesian,207,4.705705E-14,25,5.008956E-06,0,8.827813E-32
-robot_status,connected (state 4)
-robot_mode_status,real confirmed
-safety_status,self collision enabled
-command_mode,stop_motion
-command_sequence,7
-command_status,stop command #7 sent
-validation_valid,1
-validation_status,validation ok
-validation_target,207,0,25,45,0,0
-validation_joints,-42.62502,40.21901,-35.08436,-128.4857,-41.65807,84.31426
-ik_valid,1
-ik_joints,-42.62502,40.21901,-35.08436,-128.4857,-41.65807,84.31426
+real_ready,0
+safety_ready,0
+joints,0,0,0,0,0,0
+cartesian,0,0,0,0,0,0
+robot_status,disconnected (pose -1, state -1)
+robot_mode_status,real unavailable
+safety_status,self collision unavailable (-1)
+command_mode,none
+command_sequence,0
+command_status,idle
+validation_valid,0
+validation_status,not validated
+validation_target,0,0,0,0,0,0
+validation_joints,0,0,0,0,0,0
+ik_valid,0
+ik_joints,0,0,0,0,0,0
