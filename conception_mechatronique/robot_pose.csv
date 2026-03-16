@@ -1,5 +1,5 @@
 connected,0
-timestamp,2026-03-16T23:38:34.2268654+01:00
+timestamp,2026-03-17T00:09:15.3677618+01:00
 ip,http://192.168.1.227:18333
 real_ready,0
 safety_ready,0
@@ -9,8 +9,8 @@ robot_status,bridge read error
 robot_mode_status,real unavailable
 safety_status,self collision unavailable
 diagnostic_status,network issue
-diagnostic_network,web port 18333 unreachable
-diagnostic_sdk,bridge exception during robot communication
+diagnostic_network,web 18333 unreachable | sdk ctrl 502 unreachable | sdk report 30002 unreachable
+diagnostic_sdk,bridge exception: DllNotFoundException: Impossible de charger la DLL 'xarm.dll': Le module spécifié est introuvable. (Exception de HRESULT : 0x8007007E)
 command_mode,none
 command_sequence,0
 command_status,bridge error

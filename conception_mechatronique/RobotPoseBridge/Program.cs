@@ -76,11 +76,11 @@ namespace RobotPoseBridge
                         WritePoseFile(poseFilePath, transportConnected, robotEndpoint.DisplayValue, joints, cartesian, bridgeState);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     transportConnected = false;
                     bridgeState.MarkDisconnected("bridge read error");
-                    bridgeState.DiagnosticSdkStatus = "bridge exception during robot communication";
+                    bridgeState.DiagnosticSdkStatus = DescribeException(ex);
                     bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
                     bridgeState.CommandStatus = "bridge error";
                     WritePoseFile(poseFilePath, false, robotEndpoint.DisplayValue, null, null, bridgeState);
@@ -475,18 +475,30 @@ namespace RobotPoseBridge
 
         private static void UpdateConnectionDiagnostics(RobotEndpoint endpoint, BridgeState bridgeState)
         {
+            bool controlReachable = TryOpenTcpPort(endpoint.Host, 502, 600);
+            bool richReportReachable = TryOpenTcpPort(endpoint.Host, 30002, 600);
+
             if (endpoint.WebPort.HasValue)
             {
-                bridgeState.DiagnosticNetworkStatus = TryOpenTcpPort(endpoint.Host, endpoint.WebPort.Value, 600)
-                    ? $"web port {endpoint.WebPort.Value} reachable"
-                    : $"web port {endpoint.WebPort.Value} unreachable";
+                bool webReachable = TryOpenTcpPort(endpoint.Host, endpoint.WebPort.Value, 600);
+                bridgeState.DiagnosticNetworkStatus = BuildNetworkStatus(endpoint.WebPort.Value, webReachable, controlReachable, richReportReachable);
             }
             else
             {
-                bridgeState.DiagnosticNetworkStatus = "web port check skipped";
+                bridgeState.DiagnosticNetworkStatus = BuildNetworkStatus(null, false, controlReachable, richReportReachable);
             }
 
             bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
+        }
+
+        private static string BuildNetworkStatus(int? webPort, bool webReachable, bool controlReachable, bool richReportReachable)
+        {
+            string webStatus = webPort.HasValue
+                ? $"web {webPort.Value} {(webReachable ? "reachable" : "unreachable")}"
+                : "web check skipped";
+            string controlStatus = $"sdk ctrl 502 {(controlReachable ? "reachable" : "unreachable")}";
+            string reportStatus = $"sdk report 30002 {(richReportReachable ? "reachable" : "unreachable")}";
+            return string.Join(" | ", new[] { webStatus, controlStatus, reportStatus });
         }
 
         private static bool TryOpenTcpPort(string host, int port, int timeoutMs)
@@ -525,6 +537,23 @@ namespace RobotPoseBridge
             }
 
             return "SDK connect failed";
+        }
+
+        private static string DescribeException(Exception ex)
+        {
+            if (ex == null)
+            {
+                return "bridge exception";
+            }
+
+            Exception root = ex;
+            while (root.InnerException != null)
+            {
+                root = root.InnerException;
+            }
+
+            string message = string.IsNullOrWhiteSpace(root.Message) ? "no message" : root.Message.Trim();
+            return $"bridge exception: {root.GetType().Name}: {message}";
         }
 
         private static string BuildDiagnosticSummary(BridgeState bridgeState)
