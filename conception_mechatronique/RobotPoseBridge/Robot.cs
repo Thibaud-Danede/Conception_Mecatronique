@@ -27,7 +27,13 @@ namespace xARMForm
 
         public
             float JointSpeed;
+        public
             float JointAcceleration;
+        public
+            int LastCreateInstanceId;
+        public
+            int LastSwitchRet;
+        public
             float[] CurrentPosition = new float[6];
             float[] OriginePosition = new float[6];
             float[] HomeJoint = new float[7];
@@ -47,6 +53,8 @@ namespace xARMForm
             WaitFlag = true;
             SafetyFlag = false;
             TimeOut = -1;
+            LastCreateInstanceId = -1;
+            LastSwitchRet = int.MinValue;
             // Init Motion
             JointSpeed = 9.0F;
             JointAcceleration = 1000.0F;
@@ -84,15 +92,19 @@ namespace xARMForm
         public bool Create(string IP)
         {
             int ret;
+            LastCreateInstanceId = -1;
+            LastSwitchRet = int.MinValue;
             if (arm == -1)
             {
                 arm = XArmAPI.create_instance(IP, false);
+                LastCreateInstanceId = arm;
                 if (arm != -1)
                 {
                     ret = XArmAPI.switch_xarm(arm);
-                    xArmCreatedFlag = true;
+                    LastSwitchRet = ret;
                     if (ret == 0)
                     {
+                        xArmCreatedFlag = true;
                         // Prepare to start
                         ret = XArmAPI.clean_warn();
                         ret = XArmAPI.clean_error();
@@ -114,9 +126,16 @@ namespace xARMForm
                         //ret = XArmAPI.set_mode(0);
                         //ret = XArmAPI.set_state(0);
                     }
+                    else
+                    {
+                        xArmCreatedFlag = false;
+                        arm = -1;
+                    }
                 }
                 else
+                {
                     xArmCreatedFlag = false;
+                }
             }
             return xArmCreatedFlag;
         }

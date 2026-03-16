@@ -5,6 +5,9 @@ String liveTimestamp = "";
 String liveRobotStatus = "disconnected";
 String liveRobotModeStatus = "real unavailable";
 String liveSafetyStatus = "self collision unavailable";
+String liveDiagnosticStatus = "diagnostic pending";
+String liveDiagnosticNetwork = "web port check pending";
+String liveDiagnosticSdk = "SDK check pending";
 String robotPosePath = "";
 String robotCommandPath = "";
 
@@ -147,6 +150,9 @@ void resetRobotPoseFile() {
   liveRobotStatus = "waiting for bridge";
   liveRobotModeStatus = "real unavailable";
   liveSafetyStatus = "self collision unavailable";
+  liveDiagnosticStatus = "diagnostic pending";
+  liveDiagnosticNetwork = "web port check pending";
+  liveDiagnosticSdk = "SDK check pending";
   lastRobotUpdateMs = -1;
   zeroFloatArray(liveJoints);
   zeroFloatArray(liveCartesian);
@@ -216,6 +222,9 @@ void loadRobotPoseFromBridge() {
   String parsedRobotStatus = liveRobotStatus;
   String parsedRobotModeStatus = liveRobotModeStatus;
   String parsedSafetyStatus = liveSafetyStatus;
+  String parsedDiagnosticStatus = liveDiagnosticStatus;
+  String parsedDiagnosticNetwork = liveDiagnosticNetwork;
+  String parsedDiagnosticSdk = liveDiagnosticSdk;
   float[] parsedJoints = {0, 0, 0, 0, 0, 0};
   float[] parsedCartesian = {0, 0, 0, 0, 0, 0};
   int parsedCommandSequence = bridgeReportedCommandSequence;
@@ -254,6 +263,12 @@ void loadRobotPoseFromBridge() {
       parsedRobotModeStatus = join(subset(parts, 1), ",");
     } else if (key.equals("safety_status")) {
       parsedSafetyStatus = join(subset(parts, 1), ",");
+    } else if (key.equals("diagnostic_status")) {
+      parsedDiagnosticStatus = join(subset(parts, 1), ",");
+    } else if (key.equals("diagnostic_network")) {
+      parsedDiagnosticNetwork = join(subset(parts, 1), ",");
+    } else if (key.equals("diagnostic_sdk")) {
+      parsedDiagnosticSdk = join(subset(parts, 1), ",");
     } else if (key.equals("joints")) {
       fillFloatArray(parsedJoints, parts, 1);
     } else if (key.equals("cartesian")) {
@@ -280,6 +295,9 @@ void loadRobotPoseFromBridge() {
   liveRobotStatus = parsedRobotStatus;
   liveRobotModeStatus = parsedRobotModeStatus;
   liveSafetyStatus = parsedSafetyStatus;
+  liveDiagnosticStatus = parsedDiagnosticStatus;
+  liveDiagnosticNetwork = parsedDiagnosticNetwork;
+  liveDiagnosticSdk = parsedDiagnosticSdk;
   bridgeReportedCommandSequence = parsedCommandSequence;
   bridgeReportedCommandMode = parsedCommandMode;
   bridgeCommandStatus = parsedCommandStatus;
@@ -454,12 +472,12 @@ String buildFooterStatus() {
     return connectionLabel + " | " + liveRobotModeStatus + " | " + liveSafetyStatus + " | X: " + nf(liveCartesian[0], 1, 1) + " | Y: " + nf(liveCartesian[1], 1, 1) + " | Z: " + nf(liveCartesian[2], 1, 1) + " | " + bridgeCommandStatus + " | bridge: " + bridgeStatus + " | age: " + ageMs + " ms";
   }
 
-  return connectionLabel + " | " + liveRobotStatus + " | " + liveRobotModeStatus + " | " + liveSafetyStatus + " | bridge: " + bridgeStatus;
+  return connectionLabel + " | " + liveRobotStatus + " | diag: " + liveDiagnosticStatus + " | net: " + liveDiagnosticNetwork + " | sdk: " + liveDiagnosticSdk + " | bridge: " + bridgeStatus;
 }
 
 void drawLiveTelemetryCard() {
   float cardWidth = 340;
-  float cardHeight = 138;
+  float cardHeight = 172;
   float cardX = width - cardWidth - 20;
   float cardY = height - cardHeight - 55;
   String bridgeStatus = getBridgeRuntimeStatus();
@@ -486,8 +504,11 @@ void drawLiveTelemetryCard() {
   text("Robot: " + liveRobotStatus, cardX + 14, cardY + 46);
   text("Mode: " + liveRobotModeStatus, cardX + 14, cardY + 62);
   text("Safety: " + liveSafetyStatus, cardX + 14, cardY + 78);
-  text("Bridge: " + bridgeStatus, cardX + 14, cardY + 94);
-  text("CMD: " + bridgeCommandStatus, cardX + 14, cardY + 110);
+  text("Diag: " + liveDiagnosticStatus, cardX + 14, cardY + 94);
+  text("Net: " + liveDiagnosticNetwork, cardX + 14, cardY + 110);
+  text("SDK: " + liveDiagnosticSdk, cardX + 14, cardY + 126);
+  text("Bridge: " + bridgeStatus, cardX + 14, cardY + 142);
+  text("CMD: " + bridgeCommandStatus, cardX + 14, cardY + 158);
   textAlign(LEFT, CENTER);
 }
 
