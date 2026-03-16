@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using System.Threading;
 using xARMForm;
 
@@ -11,7 +12,9 @@ namespace RobotPoseBridge
     {
         private static int Main(string[] args)
         {
-            string robotIp = NormalizeRobotEndpoint(GetArgument(args, "--ip", "192.168.1.227"));
+            string configuredEndpoint = GetArgument(args, "--ip", "192.168.1.227");
+            RobotEndpoint robotEndpoint = ParseRobotEndpoint(configuredEndpoint);
+            string robotIp = robotEndpoint.Host;
             string poseFilePath = GetArgument(args, "--pose-file", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "robot_pose.csv"));
             string commandFilePath = GetArgument(args, "--command-file", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "robot_command.csv"));
             int pollMs = GetIntArgument(args, "--poll-ms", 200);
@@ -38,11 +41,14 @@ namespace RobotPoseBridge
                 {
                     if (!transportConnected)
                     {
+                        UpdateConnectionDiagnostics(robotEndpoint, bridgeState);
                         transportConnected = robot.Create(robotIp);
                         if (!transportConnected)
                         {
-                            bridgeState.MarkDisconnected("disconnected");
-                            WritePoseFile(poseFilePath, false, robotIp, null, null, bridgeState);
+                            bridgeState.DiagnosticSdkStatus = BuildSdkCreateFailureStatus(robot);
+                            bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
+                            bridgeState.MarkDisconnected("sdk connection failed");
+                            WritePoseFile(poseFilePath, false, robotEndpoint.DisplayValue, null, null, bridgeState);
                             Thread.Sleep(pollMs);
                             continue;
                         }
@@ -53,7 +59,8 @@ namespace RobotPoseBridge
                     float[] joints;
                     float[] cartesian;
                     transportConnected = TryReadRobotTelemetry(bridgeState, out joints, out cartesian);
-                    WritePoseFile(poseFilePath, transportConnected, robotIp, joints, cartesian, bridgeState);
+                    bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
+                    WritePoseFile(poseFilePath, transportConnected, robotEndpoint.DisplayValue, joints, cartesian, bridgeState);
                     if (!transportConnected)
                     {
                         Thread.Sleep(pollMs);
@@ -65,15 +72,18 @@ namespace RobotPoseBridge
                     {
                         ExecuteCommand(robot, command, bridgeState, motionSpeed);
                         lastProcessedSequence = command.Sequence;
-                        WritePoseFile(poseFilePath, transportConnected, robotIp, joints, cartesian, bridgeState);
+                        bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
+                        WritePoseFile(poseFilePath, transportConnected, robotEndpoint.DisplayValue, joints, cartesian, bridgeState);
                     }
                 }
                 catch
                 {
                     transportConnected = false;
                     bridgeState.MarkDisconnected("bridge read error");
+                    bridgeState.DiagnosticSdkStatus = "bridge exception during robot communication";
+                    bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
                     bridgeState.CommandStatus = "bridge error";
-                    WritePoseFile(poseFilePath, false, robotIp, null, null, bridgeState);
+                    WritePoseFile(poseFilePath, false, robotEndpoint.DisplayValue, null, null, bridgeState);
                 }
 
                 Thread.Sleep(pollMs);
@@ -97,6 +107,7 @@ namespace RobotPoseBridge
 
             bridgeState.RobotStatus = "connected, checking real feedback";
             bridgeState.IsRealModeReady = false;
+            bridgeState.DiagnosticSdkStatus = "SDK connected";
             bridgeState.ResetValidation();
         }
 
@@ -113,6 +124,7 @@ namespace RobotPoseBridge
 
             if (poseRet != 0 || stateRet != 0)
             {
+                bridgeState.DiagnosticSdkStatus = $"telemetry failed (pose {poseRet}, state {stateRet})";
                 bridgeState.MarkDisconnected($"disconnected (pose {poseRet}, state {stateRet})");
                 return false;
             }
@@ -124,6 +136,7 @@ namespace RobotPoseBridge
             {
                 bridgeState.IsRealModeReady = true;
                 bridgeState.RobotModeStatus = "real confirmed";
+                bridgeState.DiagnosticSdkStatus = "SDK telemetry OK";
                 joints = jointBuffer.Take(6).ToArray();
                 cartesian = cartesianBuffer;
                 return true;
@@ -133,6 +146,9 @@ namespace RobotPoseBridge
             bridgeState.RobotModeStatus = bridgeState.LastSimulationDisableRet != 0
                 ? $"real unavailable (simulation off ret {bridgeState.LastSimulationDisableRet})"
                 : $"real unavailable (real joint ret {realJointRet})";
+            bridgeState.DiagnosticSdkStatus = bridgeState.LastSimulationDisableRet != 0
+                ? $"SDK connected, simulation off failed ({bridgeState.LastSimulationDisableRet})"
+                : $"SDK connected, real joint read failed ({realJointRet})";
             return true;
         }
 
@@ -395,6 +411,9 @@ namespace RobotPoseBridge
                 "robot_status," + bridgeState.RobotStatus,
                 "robot_mode_status," + bridgeState.RobotModeStatus,
                 "safety_status," + bridgeState.SafetyStatus,
+                "diagnostic_status," + bridgeState.DiagnosticStatus,
+                "diagnostic_network," + bridgeState.DiagnosticNetworkStatus,
+                "diagnostic_sdk," + bridgeState.DiagnosticSdkStatus,
                 "command_mode," + bridgeState.LastCommandMode,
                 "command_sequence," + bridgeState.LastCommandSequence.ToString(CultureInfo.InvariantCulture),
                 "command_status," + bridgeState.CommandStatus,
@@ -454,17 +473,101 @@ namespace RobotPoseBridge
             return fallback;
         }
 
-        private static string NormalizeRobotEndpoint(string rawValue)
+        private static void UpdateConnectionDiagnostics(RobotEndpoint endpoint, BridgeState bridgeState)
+        {
+            if (endpoint.WebPort.HasValue)
+            {
+                bridgeState.DiagnosticNetworkStatus = TryOpenTcpPort(endpoint.Host, endpoint.WebPort.Value, 600)
+                    ? $"web port {endpoint.WebPort.Value} reachable"
+                    : $"web port {endpoint.WebPort.Value} unreachable";
+            }
+            else
+            {
+                bridgeState.DiagnosticNetworkStatus = "web port check skipped";
+            }
+
+            bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
+        }
+
+        private static bool TryOpenTcpPort(string host, int port, int timeoutMs)
+        {
+            try
+            {
+                using (var client = new TcpClient())
+                {
+                    IAsyncResult result = client.BeginConnect(host, port, null, null);
+                    bool connected = result.AsyncWaitHandle.WaitOne(timeoutMs);
+                    if (!connected)
+                    {
+                        return false;
+                    }
+
+                    client.EndConnect(result);
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string BuildSdkCreateFailureStatus(Robot robot)
+        {
+            if (robot.LastCreateInstanceId == -1)
+            {
+                return "SDK create_instance failed";
+            }
+
+            if (robot.LastSwitchRet != 0)
+            {
+                return $"SDK switch_xarm failed ({robot.LastSwitchRet})";
+            }
+
+            return "SDK connect failed";
+        }
+
+        private static string BuildDiagnosticSummary(BridgeState bridgeState)
+        {
+            if (bridgeState.IsRealModeReady && bridgeState.IsSafetyReady)
+            {
+                return "ready";
+            }
+
+            if (bridgeState.DiagnosticNetworkStatus.Contains("unreachable"))
+            {
+                return "network issue";
+            }
+
+            if (bridgeState.DiagnosticSdkStatus.Contains("failed"))
+            {
+                return "SDK issue";
+            }
+
+            if (!bridgeState.IsSafetyReady)
+            {
+                return "connected, safety degraded";
+            }
+
+            if (!bridgeState.IsRealModeReady)
+            {
+                return "connected, real mode degraded";
+            }
+
+            return "diagnostic pending";
+        }
+
+        private static RobotEndpoint ParseRobotEndpoint(string rawValue)
         {
             if (string.IsNullOrWhiteSpace(rawValue))
             {
-                return "192.168.1.227";
+                return new RobotEndpoint("192.168.1.227", "192.168.1.227", null);
             }
 
             string trimmed = rawValue.Trim();
             if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri uri))
             {
-                return uri.Host;
+                return new RobotEndpoint(trimmed, uri.Host, uri.IsDefaultPort ? (int?)null : uri.Port);
             }
 
             if (trimmed.Contains(":"))
@@ -472,11 +575,32 @@ namespace RobotPoseBridge
                 string[] parts = trimmed.Split(':');
                 if (parts.Length >= 2)
                 {
-                    return parts[0];
+                    if (int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int port))
+                    {
+                        return new RobotEndpoint(trimmed, parts[0], port);
+                    }
+
+                    return new RobotEndpoint(trimmed, parts[0], null);
                 }
             }
 
-            return trimmed;
+            return new RobotEndpoint(trimmed, trimmed, null);
+        }
+
+        private sealed class RobotEndpoint
+        {
+            public RobotEndpoint(string displayValue, string host, int? webPort)
+            {
+                DisplayValue = displayValue;
+                Host = host;
+                WebPort = webPort;
+            }
+
+            public string DisplayValue { get; }
+
+            public string Host { get; }
+
+            public int? WebPort { get; }
         }
 
         private sealed class RobotCommand
@@ -533,6 +657,9 @@ namespace RobotPoseBridge
                 RobotStatus = "disconnected";
                 RobotModeStatus = "real unavailable";
                 SafetyStatus = "self collision unavailable";
+                DiagnosticStatus = "diagnostic pending";
+                DiagnosticNetworkStatus = "web port check pending";
+                DiagnosticSdkStatus = "SDK check pending";
                 ValidationStatus = "not validated";
                 ValidationTarget = new float[6];
                 ValidationJoints = new float[6];
@@ -549,6 +676,12 @@ namespace RobotPoseBridge
             public string RobotModeStatus { get; set; }
 
             public string SafetyStatus { get; set; }
+
+            public string DiagnosticStatus { get; set; }
+
+            public string DiagnosticNetworkStatus { get; set; }
+
+            public string DiagnosticSdkStatus { get; set; }
 
             public bool IsRealModeReady { get; set; }
 
