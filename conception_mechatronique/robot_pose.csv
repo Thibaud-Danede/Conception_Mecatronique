@@ -1,0 +1,22 @@
+connected,1
+timestamp,2026-03-16T16:54:52.9330735+01:00
+ip,http://192.168.1.227:18333
+real_ready,1
+safety_ready,1
+joints,-0.0003295898,-0.0003295898,0,-0.0001098633,-0.0006591797,-0.0001098633
+cartesian,207.004,-0.001587701,25.00246,5.00685E-06,-0.001098633,-0.0003295898
+robot_status,connected (state 5)
+robot_mode_status,real confirmed
+safety_status,self collision enabled
+diagnostic_status,ready
+diagnostic_network,web port 18333 reachable
+diagnostic_sdk,SDK telemetry OK
+command_mode,none
+command_sequence,0
+command_status,idle
+validation_valid,0
+validation_status,not validated
+validation_target,0,0,0,0,0,0
+validation_joints,0,0,0,0,0,0
+ik_valid,0
+ik_joints,0,0,0,0,0,0

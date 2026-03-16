@@ -11,9 +11,9 @@ boolean bridgeAutoStartEnabled = true;
 String bridgeExecutableRelativePath = "RobotPoseBridge/bin/Debug/RobotPoseBridge.exe";
 String bridgeCommandFileName = "robot_command.csv";
 
-// ===== Capteur HX711 / ESP32 =====
+// ===== Capteur de force =====
 String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;
-int forceSensorPollIntervalMs = 250;
+int forceSensorPollIntervalMs = 200;
 int forceSensorWarmupDelayMs = 1800;
 int forceSensorReconnectIntervalMs = 2000;

@@ -114,23 +114,20 @@ void requestForceSensorMeasurement() {
   }
 }
 
-void requestForceSensorCalibration() {
+void requestForceSensorTare() {
   if (forceSensorPort == null) {
-    forceSensorStatus = "calibration impossible - port closed";
+    forceSensorStatus = "tare impossible - port closed";
     return;
   }
 
   try {
-    forceSensorStatus = "calibration start";
-    forceSensorPort.write("C\n");
-    delay(300);
-    forceSensorPort.write("Q\n");
-    delay(100);
+    forceSensorPort.write("T\n");
+    forceSensorStatus = "tare requested";
+    delay(80);
     forceSensorPort.write("M\n");
-    forceSensorStatus = "calibration done";
   }
   catch (Exception ex) {
-    forceSensorStatus = "calibration error";
+    forceSensorStatus = "tare error";
     closeForceSensorPort();
   }
 }
@@ -187,11 +184,7 @@ void parseForceSensorLine(String line) {
     return;
   }
 
-  if (line.equals("C")) {
-    return;
-  }
-
-  if (line.equals("Q")) {
+  if (line.equals("T")) {
     return;
   }
 
@@ -245,9 +238,18 @@ String getForceSensorSecondaryLabel() {
   return "Charge : " + nf(getForceSensorValueKg(), 1, 3) + " kg";
 }
 
+float parseFloatSafe(String s, float fallback) {
+  try {
+    return Float.parseFloat(s);
+  }
+  catch (Exception ex) {
+    return fallback;
+  }
+}
+
 boolean handleForceSensorMousePressed(float mx, float my) {
   if (isPointInRect(mx, my, forceBtnCalX, forceBtnCalY, forceBtnCalW, forceBtnCalH)) {
-    requestForceSensorCalibration();
+    requestForceSensorTare();
     return true;
   }
 
@@ -316,7 +318,7 @@ void drawForceSensorCard(float x, float y, float w, float h) {
   forceBtnReconnectW = 140;
   forceBtnReconnectH = btnH;
 
-  drawForceActionButton(forceBtnCalX, forceBtnCalY, forceBtnCalW, forceBtnCalH, "Calibration", true);
+  drawForceActionButton(forceBtnCalX, forceBtnCalY, forceBtnCalW, forceBtnCalH, "Calibrer zero", true);
   drawForceActionButton(forceBtnReconnectX, forceBtnReconnectY, forceBtnReconnectW, forceBtnReconnectH, "Relancer COM4", true);
 
   textAlign(LEFT, CENTER);
