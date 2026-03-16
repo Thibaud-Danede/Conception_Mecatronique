@@ -1,0 +1,7 @@
+float[] joint_min = {-180, -180, -180, -180, -180, -180};
+float[] joint_max = {180, 180, 180, 180, 180, 180};
+
+String bridgeTargetIp = "192.168.1.214"; // Adresse de connection du robot
+int bridgeLaunchPollMs = 200;
+boolean bridgeAutoStartEnabled = true;
+String bridgeExecutableRelativePath = "RobotPoseBridge/bin/Debug/RobotPoseBridge.exe";
