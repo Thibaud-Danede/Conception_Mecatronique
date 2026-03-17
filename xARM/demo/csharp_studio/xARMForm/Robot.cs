@@ -265,7 +265,8 @@ namespace xARMForm
             int ret = -1;
             if(xArmCreatedFlag)
                 ret = XArmAPI.motion_enable(flag);
-            EnableMotionFlag = flag;
+            if (ret == 0)
+                EnableMotionFlag = flag;
             return ret;
         }
 
