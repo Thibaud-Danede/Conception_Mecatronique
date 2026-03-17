@@ -52,6 +52,7 @@ float[] robot3d_joint_offset_deg = {0, 0, 0, 0, 0, 0};
 String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;
 boolean forceSensorAutoConnectOnManualTab = false;
+boolean forceSensorAutoConnectForSafetyStop = true;
 int forceSensorPollIntervalMs = 80;
 int forceSensorWarmupDelayMs = 1800;
 
@@ -76,3 +77,13 @@ float forceSensorAutoNudgeResponseExponent = 0.80;
 int forceSensorAutoNudgeCommandIntervalMs = 30;
 float forceSensorAutoNudgeFilterAlpha = 0.45;
 boolean forceSensorAutoNudgeInvertDirection = false;
+
+// ===== Arret de securite base sur la force =====
+// Interlock global actif hors onglet manuel: si la force depasse le seuil,
+// un stop robot est demande puis le blocage reste latche jusqu'au reset explicite.
+// Cette couche est distincte du "force auto nudge":
+// - auto nudge = assistance de mouvement uniquement en controle manuel
+// - safety stop = filet de securite global hors controle manuel
+boolean forceSafetyStopEnabled = true;
+float forceSafetyStopThresholdN = 2.0;
+boolean forceSafetyStopUseAbsoluteValue = true;

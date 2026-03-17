@@ -587,8 +587,10 @@ void sendRobotCartesianValidationCommand(float[] targetCartesian) {
 
 // Execution d'une cible cartesienne deja validee.
 boolean sendRobotCartesianExecuteCommand(float[] targetCartesian) {
-  if (!canQueueBridgeRequest()) {
-    bridgeCommandStatus = "execute blocked: bridge unavailable";
+  // L'execution MGI passe maintenant par le meme verrou de mouvement que les
+  // autres ordres reels, y compris l'interlock de force latche.
+  if (!canQueueMotionCommand()) {
+    bridgeCommandStatus = "execute blocked: " + getMotionBlockReason();
     return false;
   }
 
@@ -641,11 +643,18 @@ boolean canQueueMotionCommand() {
   // - robot connecte
   // - mode reel confirme
   // - securite bridge ok
-  return canQueueBridgeRequest() && hasRobotConnection && bridgeRealReady && bridgeSafetyReady;
+  // - aucun interlock logiciel latche (par ex. safety stop force)
+  return canQueueBridgeRequest() && !isForceSafetyStopLatched() && hasRobotConnection && bridgeRealReady && bridgeSafetyReady;
 }
 
 // Raison lisible pour l'operateur quand un mouvement est refuse.
 String getMotionBlockReason() {
+  // L'interlock de force est teste en premier pour faire remonter la vraie cause
+  // du blocage au lieu d'un message plus generique sur le bridge ou le robot.
+  if (isForceSafetyStopLatched()) {
+    return getForceSafetyStopMotionBlockReason();
+  }
+
   if (!canQueueBridgeRequest()) {
     return "bridge unavailable";
   }
@@ -682,6 +691,12 @@ String buildRobotBridgeTimestamp() {
 // Grande synthese d'etat visible dans le footer du sketch.
 String buildFooterStatus() {
   String bridgeStatus = getBridgeRuntimeStatus();
+  if (isForceSafetyStopLatched()) {
+    // Tant qu'un safety stop est latche, le footer doit mettre cet etat au
+    // premier plan plutot que les informations de pose ou de diagnostic.
+    return "FORCE SAFETY STOP LATCHED | " + forceSafetyStopStatus + " | bridge: " + bridgeStatus;
+  }
+
   String connectionLabel = hasRobotConnection ? "xArm CONNECTED" : "xArm DISCONNECTED";
   if (hasLiveRobotPose) {
     // Quand une pose live existe, on privilegie un resume "operateur" axe sur

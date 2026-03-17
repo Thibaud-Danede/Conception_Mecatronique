@@ -198,7 +198,7 @@ void drawMgiActionButtons() {
   // de la cible courante.
   drawMgiActionButton(startX, buttonY, useLiveWidth, buttonHeight, "Use live pose", hasLiveRobotPose, color(54, 60, 70));
   drawMgiActionButton(startX + useLiveWidth + gap, buttonY, validateWidth, buttonHeight, "Validate", canQueueBridgeRequest(), color(0, 120, 255));
-  drawMgiActionButton(startX + useLiveWidth + gap + validateWidth + gap, buttonY, sendWidth, buttonHeight, mgiSendHoldActive ? "Holding..." : "Hold Send", canQueueBridgeRequest() && isCurrentMgiTargetValidated(), mgiSendHoldActive ? color(0, 180, 120) : color(0, 160, 110));
+  drawMgiActionButton(startX + useLiveWidth + gap + validateWidth + gap, buttonY, sendWidth, buttonHeight, mgiSendHoldActive ? "Holding..." : "Hold Send", canQueueMotionCommand() && isCurrentMgiTargetValidated(), mgiSendHoldActive ? color(0, 180, 120) : color(0, 160, 110));
 }
 
 // Bouton d'action generique avec etat hover/disabled.
@@ -348,6 +348,12 @@ boolean handleMgiActionButtonClick(float px, float py) {
     }
     if (!isCurrentMgiTargetValidated()) {
       mgiLocalStatus = "Validate the current target before sending.";
+      return true;
+    }
+    // Meme avec une cible deja validee, un vrai mouvement peut encore etre
+    // refuse par un verrou runtime comme le safety stop force latche.
+    if (!canQueueMotionCommand()) {
+      mgiLocalStatus = "Send blocked: " + getMotionBlockReason() + ".";
       return true;
     }
     // Le bouton est un "hold": on envoie l'execution au clic, puis un stop

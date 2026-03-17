@@ -62,8 +62,11 @@ float forceBtnReconnectH = 0;
 
 // Initialise l'etat logique du module sans ouvrir le port tout de suite.
 void setupForceSensor() {
-  forceSensorStatus = forceSensorAutoConnectOnManualTab
-    ? "waiting for manual tab"
+  boolean autoConnectEnabled = forceSensorAutoConnectOnManualTab || forceSensorAutoConnectForSafetyStop;
+  // Le capteur peut maintenant etre auto-connecte soit pour le mode manuel,
+  // soit simplement pour fournir une mesure fraiche au safety stop global.
+  forceSensorStatus = autoConnectEnabled
+    ? "waiting for sensor auto connect"
     : "ready to connect";
   forceSensorAutoTarePending = false;
   forceSensorAutoTareAtMs = -1;
@@ -73,9 +76,14 @@ void setupForceSensor() {
 // Boucle principale du capteur: connexion, tare auto, mesure, puis conversion eventuelle en commande robot.
 void updateForceSensor() {
   boolean manualTabVisible = (menus == 2);
+  // Deux cas d'auto-connexion existent:
+  // - entree dans l'onglet manuel si forceSensorAutoConnectOnManualTab = true
+  // - armement du safety stop global si forceSensorAutoConnectForSafetyStop = true
+  boolean shouldAutoConnect = (manualTabVisible && forceSensorAutoConnectOnManualTab) || (forceSafetyStopEnabled && forceSensorAutoConnectForSafetyStop);
 
-  // La connexion automatique n'est tentee que depuis l'onglet manuel.
-  if (manualTabVisible && forceSensorAutoConnectOnManualTab && forceSensorPort == null && millis() - forceSensorLastConnectAttemptMs >= 2000) {
+  // La connexion automatique peut etre utilisee soit pour l'onglet manuel,
+  // soit pour armer l'interlock de securite par effort en fond.
+  if (shouldAutoConnect && forceSensorPort == null && millis() - forceSensorLastConnectAttemptMs >= 2000) {
     forceSensorAutoConnectAttempted = true;
     openForceSensorPort();
   }
@@ -112,12 +120,6 @@ void updateForceSensor() {
     return;
   }
 
-  if (!manualTabVisible) {
-    // Hors onglet manuel, on garde le port ouvert si besoin mais on ne poll pas
-    // la mesure en continu et on n'alimente pas l'auto-nudge.
-    return;
-  }
-
   // On laisse le microcontroleur finir son boot avant de juger le flux de mesure.
   if (now - forceSensorStartupMs < forceSensorWarmupDelayMs) {
     forceSensorStatus = "connected - booting";
@@ -128,12 +130,24 @@ void updateForceSensor() {
   if (now - lastForceSensorRequestMs >= forceSensorPollIntervalMs) {
     // Les mesures sont sollicitees explicitement via "M\n". On ne depend pas
     // d'un flux continu venant tout seul du microcontroleur.
+    // Cela permet aussi d'avoir un comportement identique pour l'usage manuel
+    // et pour l'interlock de securite hors manuel.
     requestForceSensorMeasurement();
     lastForceSensorRequestMs = now;
   }
 
   if (lastForceSensorResponseMs >= 0 && now - lastForceSensorResponseMs > forceSensorDataTimeoutMs) {
     forceSensorStatus = "connected - timeout";
+  }
+
+  if (!manualTabVisible) {
+    // Hors onglet manuel, on garde maintenant les mesures fraiches pour les
+    // interlocks de securite, mais on coupe toute reaction auto du robot.
+    // Autrement dit:
+    // - lecture capteur: OUI
+    // - auto-nudge / commande vitesse: NON
+    requestForceSensorAutoNudgeStop("force control inactive outside manual tab", now);
+    return;
   }
 
   updateForceSensorAutoNudge(now);

@@ -42,6 +42,8 @@ void setup() {
   setupRobotBridge();
   setupMgiUi();
   setupForceSensor();
+  // Module transverse de securite, branche apres le capteur qu'il observe.
+  setupSafetyInterlocks();
   setupRobot3DView();
 }
 
@@ -53,6 +55,8 @@ void draw() {
   // widgets des onglets lisent toutes le meme etat coherent sur la frame.
   updateRobotBridge();
   updateForceSensor();
+  // L'interlock lit la mesure capteur fraiche et peut eventuellement latche un stop.
+  updateSafetyInterlocks();
   beginRobot3DFrame();
   cursor(ARROW);
 
@@ -67,6 +71,8 @@ void draw() {
   }
 
   drawFooter();
+  // L'overlay est dessine tout a la fin pour passer au-dessus de toute l'IHM.
+  drawSafetyInterlockOverlay();
 }
 
 // Barre haute commune a tous les onglets.
@@ -218,6 +224,12 @@ String ellipsizeToWidth(String textValue, float maxWidth) {
 
 // Redirige les clics vers le header, le capteur de force ou l'onglet MGI.
 void mousePressed() {
+  if (isForceSafetyStopLatched()) {
+    // Tant que la popup de securite est la, elle capture toute la souris.
+    handleSafetyInterlockMousePressed(mouseX, mouseY);
+    return;
+  }
+
   // Priorite aux controles globaux, qui sont accessibles depuis tous les onglets.
   if (handleHeaderMousePressed(mouseX, mouseY)) {
     return;
