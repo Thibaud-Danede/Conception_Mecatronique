@@ -982,13 +982,13 @@ namespace xARMForm
                 string candidateFolder = Path.Combine(current.FullName, "conception_mechatronique");
                 if (Directory.Exists(candidateFolder))
                 {
-                    return Path.Combine(candidateFolder, "robot_pose.csv");
+                    return Path.Combine(candidateFolder, "robot_pose_xarmform.csv");
                 }
 
                 current = current.Parent;
             }
 
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "robot_pose.csv");
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "robot_pose_xarmform.csv");
         }
     }
 
