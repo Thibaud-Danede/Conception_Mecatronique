@@ -37,7 +37,16 @@ void draw_menus_2() {
   }
 
   drawMgiActionButtons();
-  drawMgiSolutionPanel(marginX, height * 0.62, width - (2 * marginX), 160);
+
+  float lowerPanelY = height * 0.62;
+  float lowerPanelH = 160;
+  float lowerPanelW = width - (2 * marginX);
+  float lowerGap = 14;
+  float solutionW = lowerPanelW * 0.58;
+  float vizW = lowerPanelW - solutionW - lowerGap;
+
+  drawMgiSolutionPanel(marginX, lowerPanelY, solutionW, lowerPanelH);
+  drawRobot3DPanel(marginX + solutionW + lowerGap, lowerPanelY, vizW, lowerPanelH, "3D robot preview (IK)");
 }
 
 String buildMgiInstructionText() {

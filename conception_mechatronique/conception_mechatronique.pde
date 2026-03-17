@@ -1,5 +1,6 @@
 import java.io.File;
 import processing.serial.*;
+import processing.event.MouseEvent;
 
 float[] joints = {0, 0, 0, 0, 0, 0};
 String[] names = {"J1: Base", "J2: Epaule", "J3: Coude", "J4: Poignet 1", "J5: Poignet 2", "J6: Poignet 3"};
@@ -7,13 +8,14 @@ int menus = 0;
 boolean homeButtonHoldActive = false;
 
 void setup() {
-  size(900, 600);
+  size(900, 600, P3D);
   surface.setResizable(true);
   textAlign(LEFT, CENTER);
 
   setupRobotBridge();
   setupMgiUi();
   setupForceSensor();
+  setupRobot3DView();
 }
 
 void draw() {
@@ -21,6 +23,7 @@ void draw() {
 
   updateRobotBridge();
   updateForceSensor();
+  beginRobot3DFrame();
   cursor(ARROW);
 
   drawHeader();
@@ -228,6 +231,14 @@ void keyPressed() {
   if (menus == 1) {
     handleMgiKeyPressed();
   }
+}
+
+void mouseDragged() {
+  handleRobot3DMouseDrag();
+}
+
+void mouseWheel(MouseEvent event) {
+  handleRobot3DMouseWheel(event);
 }
 
 boolean isPointInRect(float px, float py, float x, float y, float w, float h) {

@@ -24,5 +24,11 @@ void draw_menus_3() {
 
   float sensorCardY = marginY + (3 * spacingV) + 8;
   float sensorCardHeight = constrain(height * 0.22, 125, 160);
-  drawForceSensorCard(marginX, sensorCardY, width - (2 * marginX), sensorCardHeight);
+  float bottomWidth = width - (2 * marginX);
+  float cardGap = 14;
+  float sensorCardWidth = bottomWidth * 0.58;
+  float vizCardWidth = bottomWidth - sensorCardWidth - cardGap;
+
+  drawForceSensorCard(marginX, sensorCardY, sensorCardWidth, sensorCardHeight);
+  drawRobot3DPanel(marginX + sensorCardWidth + cardGap, sensorCardY, vizCardWidth, sensorCardHeight, "3D robot preview (manual)");
 }

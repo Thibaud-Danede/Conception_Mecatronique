@@ -45,6 +45,12 @@ void draw_menus_1() {
     );
   }
 
+  float vizX = marginX;
+  float vizY = height * 0.53;
+  float vizW = width - (2 * marginX);
+  float vizH = height * 0.30;
+  drawRobot3DPanel(vizX, vizY, vizW, vizH, "3D robot preview (joint space)");
+
   handleMgdSliderRelease();
 }
 
