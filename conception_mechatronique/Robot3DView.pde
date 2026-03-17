@@ -6,7 +6,7 @@ PGraphics robot3dBuffer = null;
 
 float robot3dRotX = -0.35;
 float robot3dRotY = 0.55;
-float robot3dZoom = 1100;
+float robot3dZoom = 200;
 
 boolean robot3dLoaded = false;
 boolean robot3dDragActive = false;
@@ -74,9 +74,11 @@ void drawRobot3DPanel(float x, float y, float w, float h, String label) {
     return;
   }
 
-  float[] sourceJoints = hasLiveRobotPose ? liveJoints : joints;
+  boolean useLivePose = hasLiveRobotPose;
+  float[] sourceJoints = useLivePose ? liveJoints : joints;
   for (int i = 0; i < 6; i++) {
-    robot3dDisplayJoints[i] = lerp(robot3dDisplayJoints[i], sourceJoints[i], 0.20);
+    float mappedJoint = mapJointForRobot3D(i, sourceJoints[i], useLivePose);
+    robot3dDisplayJoints[i] = lerp(robot3dDisplayJoints[i], mappedJoint, 0.20);
   }
 
   int viewportX = int(x + 8);
@@ -100,6 +102,22 @@ void drawRobot3DPanel(float x, float y, float w, float h, String label) {
   textAlign(LEFT, BOTTOM);
   text("Drag: rotate | Wheel: zoom", x + 12, y + h - 8);
   textAlign(LEFT, CENTER);
+}
+
+float mapJointForRobot3D(int jointIndex, float rawJoint, boolean isLivePose) {
+  if (!isLivePose) {
+    return rawJoint;
+  }
+
+  float sign = 1.0;
+  float offset = 0.0;
+  if (jointIndex >= 0 && jointIndex < robot3d_joint_sign.length) {
+    sign = robot3d_joint_sign[jointIndex];
+  }
+  if (jointIndex >= 0 && jointIndex < robot3d_joint_offset_deg.length) {
+    offset = robot3d_joint_offset_deg[jointIndex];
+  }
+  return (rawJoint + offset) * sign;
 }
 
 void updateRobot3DBuffer(int targetW, int targetH) {
@@ -190,8 +208,8 @@ void handleRobot3DMouseWheel(MouseEvent event) {
     return;
   }
 
-  robot3dZoom -= event.getCount() * 85.0;
-  robot3dZoom = constrain(robot3dZoom, 500, 2600);
+  robot3dZoom -= event.getCount() * 5.0;
+  robot3dZoom = constrain(robot3dZoom, 100, 2600);
 }
 
 class Robot3DSegment {

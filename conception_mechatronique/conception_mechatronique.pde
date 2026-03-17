@@ -36,7 +36,6 @@ void draw() {
     draw_menus_3();
   }
 
-  drawLiveTelemetryCard();
   drawFooter();
 }
 
@@ -159,7 +158,26 @@ void drawFooter() {
 
   fill(150);
   textSize(12);
-  text(buildFooterStatus(), 20, height - 20);
+  textAlign(LEFT, CENTER);
+  text(ellipsizeToWidth(buildFooterStatus(), width - 44), 20, height - 20);
+}
+
+String ellipsizeToWidth(String textValue, float maxWidth) {
+  if (textValue == null) {
+    return "";
+  }
+
+  if (textWidth(textValue) <= maxWidth) {
+    return textValue;
+  }
+
+  String suffix = "...";
+  String candidate = textValue;
+  while (candidate.length() > 0 && textWidth(candidate + suffix) > maxWidth) {
+    candidate = candidate.substring(0, candidate.length() - 1);
+  }
+
+  return candidate + suffix;
 }
 
 void mousePressed() {
