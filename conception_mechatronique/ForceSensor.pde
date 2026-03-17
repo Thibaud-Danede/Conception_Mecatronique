@@ -9,6 +9,7 @@ String forceSensorUnit = "Kg";
 int lastForceSensorRequestMs = -1000;
 int lastForceSensorResponseMs = -1;
 int forceSensorStartupMs = -1;
+int forceSensorLastConnectAttemptMs = -10000;
 boolean forceSensorAutoConnectAttempted = false;
 
 boolean forceSensorCalibrationPending = false;
@@ -34,7 +35,7 @@ void setupForceSensor() {
 void updateForceSensor() {
   boolean manualTabVisible = (menus == 2);
 
-  if (manualTabVisible && forceSensorAutoConnectOnManualTab && !forceSensorAutoConnectAttempted && forceSensorPort == null) {
+  if (manualTabVisible && forceSensorAutoConnectOnManualTab && forceSensorPort == null && millis() - forceSensorLastConnectAttemptMs >= 2000) {
     forceSensorAutoConnectAttempted = true;
     openForceSensorPort();
   }
@@ -43,7 +44,6 @@ void updateForceSensor() {
     return;
   }
 
-  readForceSensorSerial();
   updateForceSensorCalibration();
 
   if (!manualTabVisible && !forceSensorCalibrationPending) {
@@ -74,11 +74,19 @@ void updateForceSensor() {
 void openForceSensorPort() {
   closeForceSensorPort();
 
+  forceSensorLastConnectAttemptMs = millis();
   forceSensorResolvedPort = forceSensorComPort;
   forceSensorStatus = "opening " + forceSensorComPort;
 
   try {
+    if (!isConfiguredForceSensorPortAvailable()) {
+      forceSensorResolvedPort = "";
+      forceSensorStatus = "serial port not found: " + forceSensorComPort;
+      return;
+    }
+
     forceSensorPort = new Serial(this, forceSensorComPort, forceSensorBaudRate);
+    forceSensorPort.bufferUntil('\n');
     forceSensorPort.clear();
 
     forceSensorStartupMs = millis();
@@ -161,36 +169,42 @@ void requestForceSensorReconnect() {
   openForceSensorPort();
 }
 
-void readForceSensorSerial() {
-  if (forceSensorPort == null) {
+void serialEvent(Serial activePort) {
+  if (activePort == null || forceSensorPort == null || activePort != forceSensorPort) {
     return;
   }
 
-  int processedLines = 0;
+  String line = activePort.readStringUntil('\n');
+  if (line == null) {
+    return;
+  }
 
-  // Keep the animation thread responsive even if the wrong COM port is noisy.
-  while (forceSensorPort != null && forceSensorPort.available() > 0 && processedLines < forceSensorMaxLinesPerUpdate) {
-    String line = forceSensorPort.readStringUntil('\n');
-
-    if (line == null) {
-      break;
-    }
-
+  try {
     line = trim(line);
-
-    if (line.length() == 0) {
-      continue;
+    if (line.length() > 0) {
+      forceSensorLastLine = line;
+      parseForceSensorLine(line);
     }
-
-    forceSensorLastLine = line;
-    parseForceSensorLine(line);
-    processedLines++;
+  }
+  catch (Exception ex) {
+    forceSensorStatus = "serial read error";
+    closeForceSensorPort();
   }
 
   if (forceSensorPort != null && forceSensorPort.available() > forceSensorMaxBufferedBytes) {
     forceSensorPort.clear();
     forceSensorStatus = "serial buffer cleared";
   }
+}
+
+boolean isConfiguredForceSensorPortAvailable() {
+  String[] availablePorts = Serial.list();
+  for (int i = 0; i < availablePorts.length; i++) {
+    if (availablePorts[i].equalsIgnoreCase(forceSensorComPort)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void parseForceSensorLine(String line) {

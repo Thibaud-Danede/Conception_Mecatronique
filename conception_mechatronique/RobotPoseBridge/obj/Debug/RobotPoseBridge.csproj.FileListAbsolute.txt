@@ -5,3 +5,10 @@ C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatro
 C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.csproj.CoreCompileInputs.cache
 C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.exe
 C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.pdb
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\bin\Debug\xarm.dll
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\bin\Debug\RobotPoseBridge.exe
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\bin\Debug\RobotPoseBridge.pdb
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.csproj.AssemblyReference.cache
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.csproj.CoreCompileInputs.cache
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.exe
+C:\Users\DESKTOP 2.0\WORKSPACE\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\obj\Debug\RobotPoseBridge.pdb
