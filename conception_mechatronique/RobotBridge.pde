@@ -35,6 +35,16 @@ String bridgeCommandStatus = "idle";
 int bridgeCommandSequence = 0;
 boolean bridgeReconnectInProgress = false;
 int bridgeReconnectStartMs = -1;
+Object robotPoseIoLock = new Object();
+Object robotCommandIoLock = new Object();
+volatile boolean robotPoseReadInProgress = false;
+volatile long robotPoseCachedModifiedMs = -1;
+volatile String[] robotPoseCachedLines = null;
+volatile boolean robotCommandWriteInProgress = false;
+volatile String[] robotCommandPendingLines = null;
+volatile String robotCommandIoStatus = "idle";
+volatile int robotCommandWriteGeneration = 0;
+volatile int robotCommandPendingGeneration = 0;
 
 void setupRobotBridge() {
   robotPosePath = sketchPath("robot_pose.csv");
@@ -51,6 +61,7 @@ void setupLocalRobotBridge() {
   bridgeExePath = sketchPath(bridgeExecutableRelativePath);
   robotPollIntervalMs = bridgeLaunchPollMs;
   registerMethod("dispose", this);
+  cleanupStaleRobotBridgeProcessesIfNeeded();
 
   if (bridgeAutoStartEnabled) {
     startRobotBridgeProcess();
@@ -133,6 +144,7 @@ void startRobotBridgeProcess() {
 public void dispose() {
   closeForceSensorPort();
   stopRobotBridgeProcess();
+  cleanupStaleRobotBridgeProcessesIfNeeded();
 }
 
 void stopRobotBridgeProcess() {
@@ -140,7 +152,11 @@ void stopRobotBridgeProcess() {
     try {
       if (robotBridgeProcess.isAlive()) {
         robotBridgeProcess.destroy();
-        robotBridgeProcess.destroyForcibly();
+        waitForProcessExit(robotBridgeProcess, 500);
+        if (robotBridgeProcess.isAlive()) {
+          robotBridgeProcess.destroyForcibly();
+          waitForProcessExit(robotBridgeProcess, 500);
+        }
       }
     } catch (Exception ex) {
       bridgeLaunchStatus = "bridge stop failed: " + ex.getMessage();
@@ -174,6 +190,11 @@ void resetRobotCommandFile() {
   bridgeCommandSequence = 0;
   bridgeReportedCommandMode = "none";
   bridgeReportedCommandSequence = 0;
+  synchronized (robotCommandIoLock) {
+    robotCommandWriteGeneration++;
+    robotCommandPendingLines = null;
+    robotCommandPendingGeneration = robotCommandWriteGeneration;
+  }
   if (robotCommandPath.length() > 0) {
     String[] lines = {
       "sequence,0",
@@ -181,7 +202,7 @@ void resetRobotCommandFile() {
       "mode,none",
       "values,0,0,0,0,0,0"
     };
-    saveStrings(robotCommandPath, lines);
+    writeBridgeTextFileNow(robotCommandPath, lines);
   }
 }
 
@@ -195,6 +216,8 @@ void resetRobotPoseFile() {
   liveDiagnosticNetwork = "web port check pending";
   liveDiagnosticSdk = "SDK check pending";
   lastRobotUpdateMs = -1;
+  robotPoseCachedModifiedMs = -1;
+  robotPoseCachedLines = null;
   zeroFloatArray(liveJoints);
   zeroFloatArray(liveCartesian);
   if (robotPosePath.length() > 0) {
@@ -220,7 +243,7 @@ void resetRobotPoseFile() {
       "validation_target,0,0,0,0,0,0",
       "validation_joints,0,0,0,0,0,0"
     };
-    saveStrings(robotPosePath, lines);
+    writeBridgeTextFileNow(robotPosePath, lines);
   }
 }
 
@@ -272,11 +295,15 @@ void loadRobotPoseFromBridge() {
     return;
   }
 
-  String[] lines = loadStrings(robotPosePath);
+  requestRobotPoseRefresh(poseFile);
+
+  String[] lines = robotPoseCachedLines;
   if (lines == null || lines.length == 0) {
-    hasRobotConnection = false;
-    hasLiveRobotPose = false;
-    liveRobotStatus = "empty bridge data";
+    if (!robotPoseReadInProgress) {
+      hasRobotConnection = false;
+      hasLiveRobotPose = false;
+      liveRobotStatus = "empty bridge data";
+    }
     return;
   }
 
@@ -438,6 +465,26 @@ boolean sendRobotHomeCommand() {
   return true;
 }
 
+boolean sendRobotToolDeltaCommand(float[] deltaToolPose) {
+  if (!canQueueMotionCommand()) {
+    bridgeCommandStatus = "tool delta blocked: " + getMotionBlockReason();
+    return false;
+  }
+
+  sendRobotCommand("tool_delta", deltaToolPose);
+  return true;
+}
+
+boolean sendRobotToolVelocityCommand(float[] toolVelocity) {
+  if (!canQueueMotionCommand()) {
+    bridgeCommandStatus = "tool velocity blocked: " + getMotionBlockReason();
+    return false;
+  }
+
+  sendRobotCommand("tool_velocity", toolVelocity);
+  return true;
+}
+
 boolean sendRobotStopCommand() {
   if (!canQueueBridgeRequest()) {
     bridgeCommandStatus = "stop blocked: bridge unavailable";
@@ -488,7 +535,7 @@ void sendRobotCommand(String mode, float[] values) {
     "mode," + mode,
     "values," + join(formatFloatArray(values), ",")
   };
-  saveStrings(robotCommandPath, lines);
+  queueRobotCommandFileWrite(lines);
   bridgeReportedCommandMode = mode;
   bridgeReportedCommandSequence = bridgeCommandSequence;
   bridgeCommandStatus = mode + " #" + bridgeCommandSequence + " queued";
@@ -603,9 +650,20 @@ void appendBridgeLogLine(String message) {
     return;
   }
 
-  String[] line = { buildRobotBridgeTimestamp() + " | " + message };
   try {
-    saveStrings(bridgeLogPath, concat(loadStringsSafe(bridgeLogPath), line));
+    File logFile = new File(bridgeLogPath);
+    File parentDir = logFile.getParentFile();
+    if (parentDir != null && !parentDir.exists()) {
+      parentDir.mkdirs();
+    }
+    java.util.List<String> line = java.util.Collections.singletonList(buildRobotBridgeTimestamp() + " | " + message);
+    java.nio.file.Files.write(
+      logFile.toPath(),
+      line,
+      java.nio.charset.StandardCharsets.UTF_8,
+      java.nio.file.StandardOpenOption.CREATE,
+      java.nio.file.StandardOpenOption.APPEND
+    );
   } catch (Exception ex) {
     // Ignore logging errors to avoid blocking bridge startup.
   }
@@ -617,10 +675,200 @@ String[] loadStringsSafe(String path) {
     return new String[0];
   }
 
-  String[] lines = loadStrings(path);
+  String[] lines = readBridgeTextFile(path);
   if (lines == null) {
     return new String[0];
   }
 
   return lines;
+}
+
+void cleanupStaleRobotBridgeProcessesIfNeeded() {
+  if (!bridgeKillStaleProcessesOnStart) {
+    return;
+  }
+
+  String osName = System.getProperty("os.name", "").toLowerCase();
+  if (!osName.contains("win")) {
+    appendBridgeLogLine("stale bridge cleanup skipped on non-windows host");
+    return;
+  }
+
+  try {
+    ProcessBuilder killer = new ProcessBuilder("cmd", "/c", "taskkill /F /T /IM RobotPoseBridge.exe");
+    killer.redirectErrorStream(true);
+    Process killProcess = killer.start();
+    killProcess.waitFor();
+    waitForProcessExit(killProcess, max(100, bridgeStaleProcessKillWaitMs));
+    appendBridgeLogLine("stale bridge cleanup exit code " + killProcess.exitValue());
+  } catch (Exception ex) {
+    appendBridgeLogLine("stale bridge cleanup failed: " + ex.getMessage());
+  }
+}
+
+void waitForProcessExit(Process process, int timeoutMs) {
+  if (process == null) {
+    return;
+  }
+
+  long waitUntilMs = System.currentTimeMillis() + max(0, timeoutMs);
+  while (process.isAlive() && System.currentTimeMillis() < waitUntilMs) {
+    try {
+      Thread.sleep(20);
+    } catch (Exception ex) {
+      break;
+    }
+  }
+}
+
+void requestRobotPoseRefresh(File poseFile) {
+  if (poseFile == null || !poseFile.exists()) {
+    return;
+  }
+
+  long modifiedMs = poseFile.lastModified();
+  if (modifiedMs <= 0) {
+    return;
+  }
+
+  synchronized (robotPoseIoLock) {
+    if (robotPoseReadInProgress || modifiedMs == robotPoseCachedModifiedMs) {
+      return;
+    }
+    robotPoseReadInProgress = true;
+  }
+
+  final String posePathSnapshot = poseFile.getAbsolutePath();
+  final long modifiedSnapshot = modifiedMs;
+  Thread reader = new Thread(new Runnable() {
+    public void run() {
+      String[] lines = readBridgeTextFile(posePathSnapshot);
+      synchronized (robotPoseIoLock) {
+        if (lines != null && lines.length > 0) {
+          robotPoseCachedLines = lines;
+          robotPoseCachedModifiedMs = modifiedSnapshot;
+        }
+        robotPoseReadInProgress = false;
+      }
+    }
+  }, "RobotPoseReader");
+  reader.setDaemon(true);
+  reader.start();
+}
+
+void queueRobotCommandFileWrite(String[] lines) {
+  if (robotCommandPath.length() == 0 || lines == null) {
+    return;
+  }
+
+  synchronized (robotCommandIoLock) {
+    robotCommandPendingLines = lines.clone();
+    robotCommandPendingGeneration = robotCommandWriteGeneration;
+    if (robotCommandWriteInProgress) {
+      return;
+    }
+    robotCommandWriteInProgress = true;
+  }
+
+  final String commandPathSnapshot = robotCommandPath;
+  Thread writer = new Thread(new Runnable() {
+    public void run() {
+      flushRobotCommandWrites(commandPathSnapshot);
+    }
+  }, "RobotCommandWriter");
+  writer.setDaemon(true);
+  writer.start();
+}
+
+void flushRobotCommandWrites(String targetPath) {
+  while (true) {
+    String[] linesToWrite = null;
+    int writeGeneration = 0;
+
+    synchronized (robotCommandIoLock) {
+      if (robotCommandPendingLines != null) {
+        linesToWrite = robotCommandPendingLines;
+        writeGeneration = robotCommandPendingGeneration;
+        robotCommandPendingLines = null;
+      } else {
+        robotCommandWriteInProgress = false;
+        robotCommandIoStatus = "idle";
+        return;
+      }
+    }
+
+    if (writeGeneration != robotCommandWriteGeneration) {
+      continue;
+    }
+
+    robotCommandIoStatus = writeBridgeTextFileNow(targetPath, linesToWrite)
+      ? "write ok"
+      : "write failed";
+  }
+}
+
+boolean writeBridgeTextFileNow(String targetPath, String[] lines) {
+  if (targetPath == null || targetPath.length() == 0 || lines == null) {
+    return false;
+  }
+
+  try {
+    File targetFile = new File(targetPath);
+    File parentDir = targetFile.getParentFile();
+    if (parentDir != null && !parentDir.exists()) {
+      parentDir.mkdirs();
+    }
+
+    File tempFile = new File(targetPath + ".tmp");
+    java.nio.file.Path tempPath = tempFile.toPath();
+    java.nio.file.Path target = targetFile.toPath();
+    java.util.List<String> fileLines = java.util.Arrays.asList(lines);
+
+    java.nio.file.Files.write(tempPath, fileLines, java.nio.charset.StandardCharsets.UTF_8);
+
+    try {
+      java.nio.file.Files.move(
+        tempPath,
+        target,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE
+      );
+    } catch (Exception moveEx) {
+      java.nio.file.Files.move(
+        tempPath,
+        target,
+        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+      );
+    }
+    return true;
+  } catch (Exception ex) {
+    return false;
+  }
+}
+
+String[] readBridgeTextFile(String targetPath) {
+  if (targetPath == null || targetPath.length() == 0) {
+    return null;
+  }
+
+  for (int attempt = 0; attempt < 3; attempt++) {
+    try {
+      java.util.List<String> lines = java.nio.file.Files.readAllLines(
+        new File(targetPath).toPath(),
+        java.nio.charset.StandardCharsets.UTF_8
+      );
+      return lines.toArray(new String[lines.size()]);
+    } catch (Exception ex) {
+      if (attempt >= 2) {
+        return null;
+      }
+      try {
+        Thread.sleep(8);
+      } catch (Exception sleepEx) {
+        return null;
+      }
+    }
+  }
+
+  return null;
 }

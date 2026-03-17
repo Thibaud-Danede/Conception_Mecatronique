@@ -18,6 +18,8 @@ float robot3dPanelY = 0;
 float robot3dPanelW = 0;
 float robot3dPanelH = 0;
 boolean robot3dPanelVisible = false;
+int robot3dLastRenderMs = -1000;
+int robot3dRenderIntervalMs = 33;
 
 float[] robot3dDisplayJoints = {0, 0, 0, 0, 0, 0};
 
@@ -82,7 +84,10 @@ void drawRobot3DPanel(float x, float y, float w, float h, String label) {
   int viewportW = int(max(80, w - 16));
   int viewportH = int(max(70, h - 38));
   updateRobot3DBuffer(viewportW, viewportH);
-  renderRobot3DToBuffer();
+  if (robot3dBuffer != null && millis() - robot3dLastRenderMs >= robot3dRenderIntervalMs) {
+    renderRobot3DToBuffer();
+    robot3dLastRenderMs = millis();
+  }
   image(robot3dBuffer, viewportX, viewportY, viewportW, viewportH);
 
   boolean overPanel = isPointInRect(mouseX, mouseY, x, y, w, h);
@@ -103,6 +108,7 @@ void updateRobot3DBuffer(int targetW, int targetH) {
   }
 
   robot3dBuffer = createGraphics(targetW, targetH, P3D);
+  robot3dLastRenderMs = -1000;
 }
 
 void renderRobot3DToBuffer() {

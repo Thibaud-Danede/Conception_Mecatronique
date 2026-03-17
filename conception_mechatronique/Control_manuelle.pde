@@ -10,7 +10,7 @@ void draw_menus_3() {
 
   fill(160);
   textSize(12);
-  text("Capteur de force sur " + forceSensorComPort + " avec tare, reconnexion serie et auto-step Z optionnel.", marginX, marginY - 16);
+  text("Capteur de force sur " + forceSensorComPort + " avec tare, reconnexion serie et pilotage traction/pression en Z outil.", marginX, marginY - 16);
 
   for (int i = 0; i < 6; i++) {
     int col = i / 3;
@@ -23,7 +23,7 @@ void draw_menus_3() {
   }
 
   float sensorCardY = marginY + (3 * spacingV) + 8;
-  float sensorCardHeight = constrain(height * 0.22, 125, 160);
+  float sensorCardHeight = constrain(height * 0.28, 165, 195);
   float bottomWidth = width - (2 * marginX);
   float cardGap = 14;
   float sensorCardWidth = bottomWidth * 0.58;

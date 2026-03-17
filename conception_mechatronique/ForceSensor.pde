@@ -15,11 +15,15 @@ boolean forceSensorAutoConnectAttempted = false;
 boolean forceSensorCalibrationPending = false;
 int forceSensorCalibrationStep = 0;
 int forceSensorCalibrationNextActionMs = -1;
-boolean forceSensorAutoNudgeValidationPending = false;
+boolean forceSensorAutoTarePending = false;
+int forceSensorAutoTareAtMs = -1;
 int forceSensorAutoNudgeLastActionMs = -10000;
-int forceSensorAutoNudgeValidationStartMs = -1;
-String forceSensorAutoNudgeStatus = "auto step disabled";
-float[] forceSensorAutoNudgeTarget = {0, 0, 0, 0, 0, 0};
+float forceSensorAutoNudgeLastVelocityMmS = 0.0;
+float forceSensorAutoNudgeFilteredForceN = 0.0;
+boolean forceSensorAutoNudgeEngaged = false;
+String forceSensorAutoNudgeStatus = "force control disabled";
+int forceSensorAutoNudgePauseUntilMs = -1;
+int forceSensorAutoNudgeLastBridgeSequence = -1;
 
 float forceBtnCalX = 0;
 float forceBtnCalY = 0;
@@ -35,7 +39,9 @@ void setupForceSensor() {
   forceSensorStatus = forceSensorAutoConnectOnManualTab
     ? "waiting for manual tab"
     : "ready to connect";
-  resetForceSensorAutoNudgeState(forceSensorAutoNudgeEnabled ? "auto step armed" : "auto step disabled");
+  forceSensorAutoTarePending = false;
+  forceSensorAutoTareAtMs = -1;
+  resetForceSensorAutoNudgeState(forceSensorAutoNudgeEnabled ? "force control armed" : "force control disabled");
 }
 
 void updateForceSensor() {
@@ -50,20 +56,37 @@ void updateForceSensor() {
     return;
   }
 
+  int now = millis();
   updateForceSensorCalibration();
 
-  if (!manualTabVisible && !forceSensorCalibrationPending) {
-    return;
-  }
-
   if (forceSensorCalibrationPending) {
+    requestForceSensorAutoNudgeStop("force control paused during tare", now);
     return;
   }
 
-  int now = millis();
+  if (forceSensorAutoTarePending) {
+    if (now < forceSensorAutoTareAtMs) {
+      float remainingSec = max(0, forceSensorAutoTareAtMs - now) / 1000.0;
+      forceSensorStatus = "connected - auto tare in " + nf(remainingSec, 1, 1) + "s";
+      requestForceSensorAutoNudgeStop("force control waiting for auto tare", now);
+      return;
+    }
+
+    forceSensorAutoTarePending = false;
+    forceSensorAutoTareAtMs = -1;
+    forceSensorStatus = "auto tare requested";
+    requestForceSensorCalibration();
+    requestForceSensorAutoNudgeStop("force control paused during auto tare", now);
+    return;
+  }
+
+  if (!manualTabVisible) {
+    return;
+  }
 
   if (now - forceSensorStartupMs < forceSensorWarmupDelayMs) {
     forceSensorStatus = "connected - booting";
+    requestForceSensorAutoNudgeStop("force control waiting for warmup", now);
     return;
   }
 
@@ -100,7 +123,15 @@ void openForceSensorPort() {
     forceSensorStartupMs = millis();
     lastForceSensorRequestMs = -1000;
     lastForceSensorResponseMs = -1;
-    forceSensorStatus = "connected - booting";
+    forceSensorAutoTarePending = forceSensorAutoTareOnConnect;
+    forceSensorAutoTareAtMs = forceSensorAutoTarePending
+      ? forceSensorStartupMs + max(0, forceSensorWarmupDelayMs) + max(0, forceSensorAutoTareExtraDelayMs)
+      : -1;
+    if (forceSensorAutoTarePending) {
+      forceSensorStatus = "connected - auto tare scheduled";
+    } else {
+      forceSensorStatus = "connected - booting";
+    }
   }
   catch (Exception ex) {
     forceSensorPort = null;
@@ -129,6 +160,14 @@ void requestForceSensorCalibration() {
     return;
   }
 
+  lastForceSensorResponseMs = -1;
+  lastForceSensorRequestMs = -1000;
+  forceSensorValue = 0;
+  forceSensorAutoNudgeFilteredForceN = 0;
+  forceSensorAutoNudgeLastVelocityMmS = 0;
+  forceSensorAutoNudgeEngaged = false;
+  forceSensorAutoTarePending = false;
+  forceSensorAutoTareAtMs = -1;
   forceSensorCalibrationPending = true;
   forceSensorCalibrationStep = 0;
   forceSensorCalibrationNextActionMs = millis();
@@ -244,10 +283,12 @@ void parseForceSensorLine(String line) {
 }
 
 void closeForceSensorPort() {
+  forceSensorAutoTarePending = false;
+  forceSensorAutoTareAtMs = -1;
   forceSensorCalibrationPending = false;
   forceSensorCalibrationStep = 0;
   forceSensorCalibrationNextActionMs = -1;
-  resetForceSensorAutoNudgeState(forceSensorAutoNudgeEnabled ? "auto step waiting for sensor" : "auto step disabled");
+  resetForceSensorAutoNudgeState(forceSensorAutoNudgeEnabled ? "force control waiting for sensor" : "force control disabled");
 
   if (forceSensorPort != null) {
     try {
@@ -299,125 +340,154 @@ String getForceSensorReconnectLabel() {
 }
 
 void updateForceSensorAutoNudge(int now) {
+  if (bridgeReportedCommandSequence != forceSensorAutoNudgeLastBridgeSequence) {
+    forceSensorAutoNudgeLastBridgeSequence = bridgeReportedCommandSequence;
+    String bridgeStatusLower = bridgeCommandStatus.toLowerCase();
+    if (bridgeStatusLower.indexOf("tool velocity") >= 0 &&
+        (bridgeStatusLower.indexOf("blocked") >= 0 || bridgeStatusLower.indexOf("failed") >= 0)) {
+      forceSensorAutoNudgePauseUntilMs = now + 800;
+      requestForceSensorAutoNudgeStop("force control paused after bridge safety stop", now);
+      return;
+    }
+  }
+
+  if (now < forceSensorAutoNudgePauseUntilMs) {
+    requestForceSensorAutoNudgeStop("force control cooldown after blocked move", now);
+    return;
+  }
+
   if (!forceSensorAutoNudgeEnabled) {
-    forceSensorAutoNudgeStatus = "auto step disabled";
-    forceSensorAutoNudgeValidationPending = false;
+    forceSensorAutoNudgeFilteredForceN = 0;
+    requestForceSensorAutoNudgeStop("force control disabled", now);
     return;
   }
 
   if (forceSensorPort == null) {
-    forceSensorAutoNudgeStatus = "auto step waiting for sensor";
-    forceSensorAutoNudgeValidationPending = false;
+    forceSensorAutoNudgeFilteredForceN = 0;
+    requestForceSensorAutoNudgeStop("force control waiting for sensor", now);
     return;
   }
 
   if (forceSensorCalibrationPending) {
-    forceSensorAutoNudgeStatus = "auto step paused during tare";
+    requestForceSensorAutoNudgeStop("force control paused during tare", now);
     return;
   }
 
   if (!isForceSensorFresh()) {
-    forceSensorAutoNudgeStatus = "auto step waiting for fresh force data";
-    forceSensorAutoNudgeValidationPending = false;
+    requestForceSensorAutoNudgeStop("force control waiting for fresh force data", now);
     return;
   }
 
   if (!hasLiveRobotPose) {
-    forceSensorAutoNudgeStatus = "auto step waiting for live robot pose";
-    forceSensorAutoNudgeValidationPending = false;
+    requestForceSensorAutoNudgeStop("force control waiting for live robot pose", now);
     return;
   }
 
   if (!canQueueMotionCommand()) {
-    forceSensorAutoNudgeStatus = "auto step blocked: " + getMotionBlockReason();
-    forceSensorAutoNudgeValidationPending = false;
+    requestForceSensorAutoNudgeStop("force control blocked: " + getMotionBlockReason(), now);
     return;
   }
 
-  if (forceSensorAutoNudgeValidationPending) {
-    updateForceSensorAutoNudgeValidation(now);
-    return;
+  float rawForceN = getForceSensorValueN();
+  float alpha = constrain(forceSensorAutoNudgeFilterAlpha, 0.01, 1.0);
+  forceSensorAutoNudgeFilteredForceN = lerp(forceSensorAutoNudgeFilteredForceN, rawForceN, alpha);
+
+  float targetVelocityMmS = 0.0;
+  float absFilteredForceN = abs(forceSensorAutoNudgeFilteredForceN);
+  float hysteresisN = max(0.0, forceSensorAutoNudgeHysteresisN);
+  float engageThresholdN = forceSensorAutoNudgeDeadbandN + hysteresisN;
+  float releaseThresholdN = max(0.0, forceSensorAutoNudgeDeadbandN - hysteresisN);
+
+  if (!forceSensorAutoNudgeEngaged && absFilteredForceN >= engageThresholdN) {
+    forceSensorAutoNudgeEngaged = true;
+  } else if (forceSensorAutoNudgeEngaged && absFilteredForceN <= releaseThresholdN) {
+    forceSensorAutoNudgeEngaged = false;
   }
 
-  float forceKg = getForceSensorValueKg();
-  if (forceKg < forceSensorAutoNudgeThresholdKg) {
-    forceSensorAutoNudgeStatus = "auto step armed above " + nf(forceSensorAutoNudgeThresholdKg, 1, 3) + " kg";
-    return;
+  if (forceSensorAutoNudgeEngaged) {
+    float effectiveForceN = max(0.0, absFilteredForceN - forceSensorAutoNudgeDeadbandN);
+    float velocityMagnitudeMmS = computeForceSensorVelocityMagnitudeMmS(effectiveForceN);
+    targetVelocityMmS = forceSensorAutoNudgeFilteredForceN > 0 ? velocityMagnitudeMmS : -velocityMagnitudeMmS;
+    if (forceSensorAutoNudgeInvertDirection) {
+      targetVelocityMmS = -targetVelocityMmS;
+    }
   }
 
-  int remainingCooldownMs = forceSensorAutoNudgeCooldownMs - (now - forceSensorAutoNudgeLastActionMs);
-  if (remainingCooldownMs > 0) {
-    forceSensorAutoNudgeStatus = "auto step cooldown " + remainingCooldownMs + " ms";
-    return;
-  }
-
-  queueForceSensorAutoNudgeValidation(now, forceKg);
-}
-
-void updateForceSensorAutoNudgeValidation(int now) {
-  if (!forceSensorAutoNudgeValidationPending) {
-    return;
-  }
-
-  if (!canQueueMotionCommand()) {
-    forceSensorAutoNudgeValidationPending = false;
-    forceSensorAutoNudgeStatus = "auto step blocked: " + getMotionBlockReason();
-    return;
-  }
-
-  if (now - forceSensorAutoNudgeValidationStartMs > forceSensorAutoNudgeValidationTimeoutMs) {
-    forceSensorAutoNudgeValidationPending = false;
-    forceSensorAutoNudgeLastActionMs = now;
-    forceSensorAutoNudgeStatus = "auto step validation timeout";
-    return;
-  }
-
-  if (!doTargetsMatch(forceSensorAutoNudgeTarget, bridgeValidationTarget)) {
-    forceSensorAutoNudgeStatus = "auto step waiting for bridge validation";
-    return;
-  }
-
-  if (!bridgeValidationPassed) {
-    if (bridgeValidationStatus.equals("validation queued") || bridgeValidationStatus.equals("not validated")) {
-      forceSensorAutoNudgeStatus = "auto step validating";
+  int commandIntervalMs = max(20, forceSensorAutoNudgeCommandIntervalMs);
+  boolean shouldSendNow = (now - forceSensorAutoNudgeLastActionMs) >= commandIntervalMs;
+  boolean mustSendStop = abs(targetVelocityMmS) < 0.01 && abs(forceSensorAutoNudgeLastVelocityMmS) > 0.01;
+  if (!shouldSendNow && !mustSendStop) {
+    if (abs(targetVelocityMmS) < 0.01) {
+      forceSensorAutoNudgeStatus = "force control armed +/-" + nf(forceSensorAutoNudgeDeadbandN, 1, 2) + " N (hys " + nf(hysteresisN, 1, 2) + ")";
     } else {
-      forceSensorAutoNudgeValidationPending = false;
-      forceSensorAutoNudgeLastActionMs = now;
-      forceSensorAutoNudgeStatus = "auto step blocked: " + bridgeValidationStatus;
+      forceSensorAutoNudgeStatus = "force hold active, target vZ " + nf(targetVelocityMmS, 1, 2) + " mm/s";
     }
     return;
   }
 
-  sendRobotCommand("cartesian_ik_execute", forceSensorAutoNudgeTarget);
-  forceSensorAutoNudgeValidationPending = false;
-  forceSensorAutoNudgeLastActionMs = now;
-  forceSensorAutoNudgeStatus = "auto step execute queued";
-}
-
-void queueForceSensorAutoNudgeValidation(int now, float currentForceKg) {
-  float[] target = {0, 0, 0, 0, 0, 0};
-  arrayCopy(liveCartesian, target);
-  target[2] = constrain(target[2] + forceSensorAutoNudgeDeltaZMm, cartesian_min[2], cartesian_max[2]);
-
-  if (abs(target[2] - liveCartesian[2]) < 0.001) {
-    forceSensorAutoNudgeLastActionMs = now;
-    forceSensorAutoNudgeStatus = "auto step blocked: Z limit reached";
+  float[] toolVelocity = {0, 0, targetVelocityMmS, 0, 0, 0};
+  boolean commandQueued = sendRobotToolVelocityCommand(toolVelocity);
+  if (!commandQueued) {
+    forceSensorAutoNudgeStatus = "force velocity blocked: " + bridgeCommandStatus;
+    forceSensorAutoNudgeLastVelocityMmS = 0;
     return;
   }
 
-  arrayCopy(target, forceSensorAutoNudgeTarget);
-  sendRobotCartesianValidationCommand(forceSensorAutoNudgeTarget);
-  forceSensorAutoNudgeValidationPending = true;
-  forceSensorAutoNudgeValidationStartMs = now;
-  forceSensorAutoNudgeStatus = "auto step validating at " + nf(currentForceKg, 1, 3) + " kg";
+  forceSensorAutoNudgeLastActionMs = now;
+  forceSensorAutoNudgeLastVelocityMmS = targetVelocityMmS;
+  if (abs(targetVelocityMmS) < 0.01) {
+    forceSensorAutoNudgeStatus = "force neutralized, velocity stop queued";
+  } else {
+    forceSensorAutoNudgeStatus = "force velocity queued: vZ " + nf(targetVelocityMmS, 1, 2) + " mm/s (F " + nf(rawForceN, 1, 2) + " N)";
+  }
 }
 
 void resetForceSensorAutoNudgeState(String nextStatus) {
-  forceSensorAutoNudgeValidationPending = false;
   forceSensorAutoNudgeLastActionMs = -10000;
-  forceSensorAutoNudgeValidationStartMs = -1;
-  zeroFloatArray(forceSensorAutoNudgeTarget);
+  forceSensorAutoNudgeLastVelocityMmS = 0;
+  forceSensorAutoNudgeFilteredForceN = 0;
+  forceSensorAutoNudgeEngaged = false;
+  forceSensorAutoNudgePauseUntilMs = -1;
+  forceSensorAutoNudgeLastBridgeSequence = bridgeReportedCommandSequence;
   forceSensorAutoNudgeStatus = nextStatus;
+}
+
+void requestForceSensorAutoNudgeStop(String reason, int now) {
+  forceSensorAutoNudgeEngaged = false;
+  boolean wasMoving = abs(forceSensorAutoNudgeLastVelocityMmS) > 0.01;
+  boolean stopQueued = false;
+
+  if (wasMoving && canQueueMotionCommand()) {
+    float[] zeroVelocity = {0, 0, 0, 0, 0, 0};
+    stopQueued = sendRobotToolVelocityCommand(zeroVelocity);
+  }
+
+  if (stopQueued) {
+    forceSensorAutoNudgeLastActionMs = now;
+    forceSensorAutoNudgeStatus = reason + " -> velocity stop queued";
+  } else if (wasMoving && canQueueBridgeRequest()) {
+    sendRobotStopCommand();
+    forceSensorAutoNudgeStatus = reason + " -> stop requested";
+  } else {
+    forceSensorAutoNudgeStatus = reason;
+  }
+
+  forceSensorAutoNudgeLastVelocityMmS = 0;
+}
+
+float computeForceSensorVelocityMagnitudeMmS(float effectiveForceN) {
+  float velocityMinMmS = max(0.0, forceSensorAutoNudgeVelocityMmSMin);
+  float velocityMaxMmS = max(velocityMinMmS + 0.1, forceSensorAutoNudgeVelocityMmSMax);
+  float forceForMaxSpeedN = max(0.05, forceSensorAutoNudgeForceForMaxSpeedN);
+  float responseExponent = max(0.35, forceSensorAutoNudgeResponseExponent);
+
+  if (effectiveForceN <= 0.0) {
+    return 0.0;
+  }
+
+  float normalizedForce = constrain(effectiveForceN / forceForMaxSpeedN, 0.0, 1.0);
+  float shapedForce = pow(normalizedForce, responseExponent);
+  return lerp(velocityMinMmS, velocityMaxMmS, shapedForce);
 }
 
 boolean handleForceSensorMousePressed(float mx, float my) {
@@ -469,13 +539,14 @@ void drawForceSensorCard(float x, float y, float w, float h) {
   textSize(12);
   text("Port : " + (forceSensorResolvedPort.equals("") ? "--" : forceSensorResolvedPort), rightX, y + 14);
   text("Statut : " + forceSensorStatus, rightX, y + 32);
-  text("Auto Z : " + (forceSensorAutoNudgeEnabled ? "ON" : "OFF"), rightX, y + 50);
+  text("Force Ctrl : " + (forceSensorAutoNudgeEnabled ? "ON" : "OFF"), rightX, y + 50);
   text("Action : " + forceSensorAutoNudgeStatus, rightX, y + 68);
+  text("Last vZ : " + nf(forceSensorAutoNudgeLastVelocityMmS, 1, 2) + " mm/s", rightX, y + 86);
 
   if (lastForceSensorResponseMs >= 0) {
-    text("Age mesure : " + max(0, millis() - lastForceSensorResponseMs) + " ms", rightX, y + 86);
+    text("Age mesure : " + max(0, millis() - lastForceSensorResponseMs) + " ms", rightX, y + 104);
   } else {
-    text("Age mesure : --", rightX, y + 86);
+    text("Age mesure : --", rightX, y + 104);
   }
 
   float btnY = y + h - 42;

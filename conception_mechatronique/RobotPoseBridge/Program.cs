@@ -10,6 +10,10 @@ namespace RobotPoseBridge
 {
     internal static class Program
     {
+        private const int ToolVelocityWatchdogTimeoutMs = 350;
+        private const float ToolVelocitySafetyLookaheadSeconds = 0.20F;
+        private const float ToolVelocityValidationThresholdMmS = 0.05F;
+
         private static int Main(string[] args)
         {
             string configuredEndpoint = GetArgument(args, "--ip", "192.168.1.227");
@@ -75,9 +79,12 @@ namespace RobotPoseBridge
                         bridgeState.DiagnosticStatus = BuildDiagnosticSummary(bridgeState);
                         WritePoseFile(poseFilePath, transportConnected, robotEndpoint.DisplayValue, joints, cartesian, bridgeState);
                     }
+
+                    EnforceToolVelocityWatchdog(robot, bridgeState);
                 }
                 catch (Exception ex)
                 {
+                    TryForceStopToolVelocity(robot, bridgeState);
                     transportConnected = false;
                     bridgeState.MarkDisconnected("bridge read error");
                     bridgeState.DiagnosticSdkStatus = DescribeException(ex);
@@ -108,6 +115,7 @@ namespace RobotPoseBridge
             bridgeState.RobotStatus = "connected, checking real feedback";
             bridgeState.IsRealModeReady = false;
             bridgeState.DiagnosticSdkStatus = "SDK connected";
+            bridgeState.ActiveControlMode = -1;
             bridgeState.ResetValidation();
         }
 
@@ -173,7 +181,13 @@ namespace RobotPoseBridge
                 float[] jointTargets = new float[7];
                 Array.Copy(command.Values, jointTargets, Math.Min(6, command.Values.Length));
                 jointTargets[6] = 0.0F;
-                PrepareRobotMotion(robot);
+                int prepareRet = PrepareRobotMotion(robot, bridgeState);
+                if (prepareRet != 0)
+                {
+                    bridgeState.CommandStatus = $"joint command #{command.Sequence} prep failed ({prepareRet})";
+                    return;
+                }
+
                 int moveRet = robot.MoveJointValues(jointTargets, motionSpeed, wait: false);
                 bridgeState.CommandStatus = moveRet == 0
                     ? $"joint command #{command.Sequence} sent"
@@ -189,7 +203,13 @@ namespace RobotPoseBridge
                     return;
                 }
 
-                PrepareRobotMotion(robot);
+                int prepareRet = PrepareRobotMotion(robot, bridgeState);
+                if (prepareRet != 0)
+                {
+                    bridgeState.CommandStatus = $"home command #{command.Sequence} prep failed ({prepareRet})";
+                    return;
+                }
+
                 int moveHomeRet = robot.MoveHome(motionSpeed, 0, 0, false);
                 bridgeState.CommandStatus = moveHomeRet == 0
                     ? $"home command #{command.Sequence} sent"
@@ -197,8 +217,78 @@ namespace RobotPoseBridge
                 return;
             }
 
+            if (string.Equals(command.Mode, "tool_delta", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!bridgeState.IsReadyForMotion)
+                {
+                    bridgeState.CommandStatus = "tool delta blocked: " + bridgeState.GetMotionBlockReason();
+                    return;
+                }
+
+                float[] toolDelta = new float[6];
+                Array.Copy(command.Values, toolDelta, Math.Min(6, command.Values.Length));
+                int prepareRet = PrepareRobotMotion(robot, bridgeState);
+                if (prepareRet != 0)
+                {
+                    bridgeState.CommandStatus = $"tool delta #{command.Sequence} prep failed ({prepareRet})";
+                    return;
+                }
+
+                int moveToolRet = robot.MoveTool(toolDelta, wait: false);
+                bridgeState.CommandStatus = moveToolRet == 0
+                    ? $"tool delta #{command.Sequence} sent"
+                    : $"tool delta #{command.Sequence} failed ({moveToolRet})";
+                return;
+            }
+
+            if (string.Equals(command.Mode, "tool_velocity", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!bridgeState.IsReadyForMotion)
+                {
+                    bridgeState.CommandStatus = "tool velocity blocked: " + bridgeState.GetMotionBlockReason();
+                    return;
+                }
+
+                float[] toolVelocity = new float[6];
+                Array.Copy(command.Values, toolVelocity, Math.Min(6, command.Values.Length));
+
+                int prepareRet = PrepareRobotVelocityMotion(robot, bridgeState);
+                if (prepareRet != 0)
+                {
+                    bridgeState.CommandStatus = $"tool velocity #{command.Sequence} prep failed ({prepareRet})";
+                    return;
+                }
+
+                ValidationResult velocityValidation = ValidateToolVelocitySafety(robot, toolVelocity, bridgeState);
+                if (!velocityValidation.IsValid)
+                {
+                    TryForceStopToolVelocity(robot, bridgeState);
+                    bridgeState.CommandStatus = $"tool velocity #{command.Sequence} blocked: {velocityValidation.Message}";
+                    return;
+                }
+
+                int velocityRet = XArmAPI.vc_set_cartesian_velocity(toolVelocity, true, -1.0F);
+                if (velocityRet != 0)
+                {
+                    TryForceStopToolVelocity(robot, bridgeState);
+                    bridgeState.CommandStatus = $"tool velocity #{command.Sequence} failed ({velocityRet}), motion stopped";
+                    return;
+                }
+
+                bridgeState.CommandStatus = $"tool velocity #{command.Sequence} sent";
+                bridgeState.LastToolVelocityCommandUtc = DateTime.UtcNow;
+                bridgeState.LastToolVelocityMagnitude = GetVectorMaxAbs(toolVelocity);
+                return;
+            }
+
             if (string.Equals(command.Mode, "stop_motion", StringComparison.OrdinalIgnoreCase))
             {
+                // Best effort: flush cartesian velocity before hard stop.
+                XArmAPI.vc_set_cartesian_velocity(new float[6], true, -1.0F);
+                XArmAPI.set_cartesian_velo_continuous(false);
+                bridgeState.ActiveControlMode = -1;
+                bridgeState.LastToolVelocityCommandUtc = DateTime.MinValue;
+                bridgeState.LastToolVelocityMagnitude = 0.0F;
                 int stopRet = robot.SetState(4);
                 bridgeState.CommandStatus = stopRet == 0
                     ? $"stop command #{command.Sequence} sent"
@@ -228,7 +318,13 @@ namespace RobotPoseBridge
                     return;
                 }
 
-                PrepareRobotMotion(robot);
+                int prepareRet = PrepareRobotMotion(robot, bridgeState);
+                if (prepareRet != 0)
+                {
+                    bridgeState.CommandStatus = $"MGI execute #{command.Sequence} prep failed ({prepareRet})";
+                    return;
+                }
+
                 int moveRet = robot.MoveJointValues(validation.SolvedJoints, motionSpeed, wait: false);
                 bridgeState.CommandStatus = moveRet == 0
                     ? $"MGI execute #{command.Sequence} sent"
@@ -239,11 +335,241 @@ namespace RobotPoseBridge
             bridgeState.CommandStatus = $"unsupported mode #{command.Sequence}: {command.Mode}";
         }
 
-        private static void PrepareRobotMotion(Robot robot)
+        private static int PrepareRobotMotion(Robot robot, BridgeState bridgeState)
         {
-            robot.EnableMotion(true);
-            robot.SetMode(0);
-            robot.SetState(0);
+            if (bridgeState.ActiveControlMode == 0)
+            {
+                return 0;
+            }
+
+            int enableRet = robot.EnableMotion(true);
+            if (enableRet != 0)
+            {
+                return enableRet;
+            }
+
+            if (bridgeState.ActiveControlMode == 5)
+            {
+                XArmAPI.vc_set_cartesian_velocity(new float[6], true, -1.0F);
+                XArmAPI.set_cartesian_velo_continuous(false);
+                bridgeState.LastToolVelocityCommandUtc = DateTime.MinValue;
+                bridgeState.LastToolVelocityMagnitude = 0.0F;
+            }
+
+            if (bridgeState.ActiveControlMode != 0)
+            {
+                int modeRet = XArmAPI.set_mode(0);
+                if (modeRet != 0)
+                {
+                    return modeRet;
+                }
+                bridgeState.ActiveControlMode = 0;
+            }
+
+            int stateRet = robot.SetState(0);
+            if (stateRet != 0)
+            {
+                return stateRet;
+            }
+
+            return 0;
+        }
+
+        private static int PrepareRobotVelocityMotion(Robot robot, BridgeState bridgeState)
+        {
+            if (bridgeState.ActiveControlMode == 5)
+            {
+                return 0;
+            }
+
+            int enableRet = robot.EnableMotion(true);
+            if (enableRet != 0)
+            {
+                return enableRet;
+            }
+
+            if (bridgeState.ActiveControlMode != 5)
+            {
+                int modeRet = XArmAPI.set_mode(5);
+                if (modeRet != 0)
+                {
+                    return modeRet;
+                }
+
+                XArmAPI.set_cartesian_velo_continuous(true);
+                bridgeState.ActiveControlMode = 5;
+            }
+
+            int stateRet = robot.SetState(0);
+            if (stateRet != 0)
+            {
+                return stateRet;
+            }
+
+            return 0;
+        }
+
+        private static void EnforceToolVelocityWatchdog(Robot robot, BridgeState bridgeState)
+        {
+            if (bridgeState.ActiveControlMode != 5)
+            {
+                return;
+            }
+
+            if (bridgeState.LastToolVelocityMagnitude <= 0.01F)
+            {
+                return;
+            }
+
+            if (bridgeState.LastToolVelocityCommandUtc == DateTime.MinValue)
+            {
+                TryForceStopToolVelocity(robot, bridgeState);
+                return;
+            }
+
+            double elapsedMs = (DateTime.UtcNow - bridgeState.LastToolVelocityCommandUtc).TotalMilliseconds;
+            if (elapsedMs <= ToolVelocityWatchdogTimeoutMs)
+            {
+                return;
+            }
+
+            TryForceStopToolVelocity(robot, bridgeState);
+            bridgeState.CommandStatus = $"velocity watchdog stop ({(int)elapsedMs} ms)";
+        }
+
+        private static void TryForceStopToolVelocity(Robot robot, BridgeState bridgeState)
+        {
+            try
+            {
+                XArmAPI.vc_set_cartesian_velocity(new float[6], true, -1.0F);
+                XArmAPI.set_cartesian_velo_continuous(false);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                robot.SetState(0);
+            }
+            catch
+            {
+            }
+
+            bridgeState.LastToolVelocityCommandUtc = DateTime.MinValue;
+            bridgeState.LastToolVelocityMagnitude = 0.0F;
+            bridgeState.ActiveControlMode = -1;
+        }
+
+        private static float GetVectorMaxAbs(float[] values)
+        {
+            if (values == null || values.Length == 0)
+            {
+                return 0.0F;
+            }
+
+            float maxAbs = 0.0F;
+            for (int i = 0; i < values.Length; i++)
+            {
+                float current = Math.Abs(values[i]);
+                if (current > maxAbs)
+                {
+                    maxAbs = current;
+                }
+            }
+
+            return maxAbs;
+        }
+
+        private static ValidationResult ValidateToolVelocitySafety(Robot robot, float[] toolVelocity, BridgeState bridgeState)
+        {
+            if (toolVelocity == null || toolVelocity.Length < 6)
+            {
+                return ValidationResult.Invalid(new float[6], "blocked: invalid velocity payload");
+            }
+
+            float linearMagnitude = Math.Max(Math.Abs(toolVelocity[0]), Math.Max(Math.Abs(toolVelocity[1]), Math.Abs(toolVelocity[2])));
+            float angularMagnitude = Math.Max(Math.Abs(toolVelocity[3]), Math.Max(Math.Abs(toolVelocity[4]), Math.Abs(toolVelocity[5])));
+            if (linearMagnitude <= ToolVelocityValidationThresholdMmS && angularMagnitude <= ToolVelocityValidationThresholdMmS)
+            {
+                return ValidationResult.Valid(new float[6], new float[7], "velocity stop");
+            }
+
+            var currentPose = new float[6];
+            int poseRet = XArmAPI.get_position(currentPose);
+            if (poseRet != 0)
+            {
+                return ValidationResult.Invalid(new float[6], $"blocked: current pose read failed ({poseRet})");
+            }
+
+            float[] projectedPose = BuildProjectedPoseFromToolVelocity(currentPose, toolVelocity, ToolVelocitySafetyLookaheadSeconds);
+            ValidationResult projectedValidation = ValidateCartesianTarget(robot, projectedPose, bridgeState);
+            if (!projectedValidation.IsValid)
+            {
+                return ValidationResult.Invalid(projectedPose, projectedValidation.Message, projectedValidation.SolvedJoints);
+            }
+
+            return ValidationResult.Valid(projectedPose, projectedValidation.SolvedJoints, "velocity safety ok");
+        }
+
+        private static float[] BuildProjectedPoseFromToolVelocity(float[] currentPose, float[] toolVelocity, float lookaheadSeconds)
+        {
+            float[] projectedPose = new float[6];
+            Array.Copy(currentPose ?? new float[6], projectedPose, 6);
+
+            float safeHorizon = Math.Max(0.05F, lookaheadSeconds);
+            float deltaXTool = toolVelocity[0] * safeHorizon;
+            float deltaYTool = toolVelocity[1] * safeHorizon;
+            float deltaZTool = toolVelocity[2] * safeHorizon;
+            float roll = currentPose != null && currentPose.Length > 3 ? currentPose[3] : 0.0F;
+            float pitch = currentPose != null && currentPose.Length > 4 ? currentPose[4] : 0.0F;
+            float yaw = currentPose != null && currentPose.Length > 5 ? currentPose[5] : 0.0F;
+            float[] deltaBase = RotateToolLinearDeltaToBase(roll, pitch, yaw, deltaXTool, deltaYTool, deltaZTool);
+
+            projectedPose[0] += deltaBase[0];
+            projectedPose[1] += deltaBase[1];
+            projectedPose[2] += deltaBase[2];
+            projectedPose[3] += toolVelocity[3] * safeHorizon;
+            projectedPose[4] += toolVelocity[4] * safeHorizon;
+            projectedPose[5] += toolVelocity[5] * safeHorizon;
+            return projectedPose;
+        }
+
+        private static float[] RotateToolLinearDeltaToBase(float rollDeg, float pitchDeg, float yawDeg, float tx, float ty, float tz)
+        {
+            double roll = DegToRad(rollDeg);
+            double pitch = DegToRad(pitchDeg);
+            double yaw = DegToRad(yawDeg);
+
+            double cr = Math.Cos(roll);
+            double sr = Math.Sin(roll);
+            double cp = Math.Cos(pitch);
+            double sp = Math.Sin(pitch);
+            double cy = Math.Cos(yaw);
+            double sy = Math.Sin(yaw);
+
+            // Rotation matrix using yaw-pitch-roll convention: R = Rz(yaw) * Ry(pitch) * Rx(roll)
+            double r00 = cy * cp;
+            double r01 = cy * sp * sr - sy * cr;
+            double r02 = cy * sp * cr + sy * sr;
+            double r10 = sy * cp;
+            double r11 = sy * sp * sr + cy * cr;
+            double r12 = sy * sp * cr - cy * sr;
+            double r20 = -sp;
+            double r21 = cp * sr;
+            double r22 = cp * cr;
+
+            return new[]
+            {
+                (float)(r00 * tx + r01 * ty + r02 * tz),
+                (float)(r10 * tx + r11 * ty + r12 * tz),
+                (float)(r20 * tx + r21 * ty + r22 * tz)
+            };
+        }
+
+        private static double DegToRad(float angleDeg)
+        {
+            return angleDeg * Math.PI / 180.0;
         }
 
         private static ValidationResult ValidateCartesianTarget(Robot robot, float[] rawValues, BridgeState bridgeState)
@@ -692,6 +1018,9 @@ namespace RobotPoseBridge
                 ValidationStatus = "not validated";
                 ValidationTarget = new float[6];
                 ValidationJoints = new float[6];
+                ActiveControlMode = -1;
+                LastToolVelocityCommandUtc = DateTime.MinValue;
+                LastToolVelocityMagnitude = 0.0F;
             }
 
             public string CommandStatus { get; set; }
@@ -719,6 +1048,12 @@ namespace RobotPoseBridge
             public int LastSimulationDisableRet { get; set; }
 
             public int LastSafetyEnableRet { get; set; }
+
+            public int ActiveControlMode { get; set; }
+
+            public DateTime LastToolVelocityCommandUtc { get; set; }
+
+            public float LastToolVelocityMagnitude { get; set; }
 
             public bool ValidationPassed { get; set; }
 
@@ -757,6 +1092,9 @@ namespace RobotPoseBridge
                 RobotStatus = status;
                 RobotModeStatus = "real unavailable";
                 IsRealModeReady = false;
+                ActiveControlMode = -1;
+                LastToolVelocityCommandUtc = DateTime.MinValue;
+                LastToolVelocityMagnitude = 0.0F;
             }
 
             public string GetMotionBlockReason()

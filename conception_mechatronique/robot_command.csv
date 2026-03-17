@@ -1,4 +1,4 @@
-sequence,19
-timestamp,2026-03-17T14:43:58
-mode,stop_motion
+sequence,1721
+timestamp,2026-03-17T16:59:21
+mode,tool_velocity
 values,0.0,0.0,0.0,0.0,0.0,0.0
