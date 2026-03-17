@@ -14,7 +14,7 @@ String bridgeCommandFileName = "robot_command.csv";
 // ===== Capteur HX711 / ESP32 =====
 String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;
-boolean forceSensorAutoConnectOnManualTab = true;
+boolean forceSensorAutoConnectOnManualTab = false;
 int forceSensorPollIntervalMs = 250;
 int forceSensorWarmupDelayMs = 1800;
 int forceSensorDataTimeoutMs = 1500;
