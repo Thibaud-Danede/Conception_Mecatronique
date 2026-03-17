@@ -1,22 +1,22 @@
 connected,1
-timestamp,2026-03-16T17:46:42.7443729+01:00
+timestamp,2026-03-17T12:37:05.2932336+01:00
 ip,http://192.168.1.227:18333
 real_ready,1
 safety_ready,1
-joints,-0.0004394531,-0.0005493164,-0.0001098633,0.0001098633,-0.0005493164,0.0001098633
-cartesian,207.005,-0.001190781,25.00276,-180,-0.001208496,-0.0004394531
-robot_status,connected (state 5)
+joints,-0.001208496,-0.0003295898,-0.0003295898,-0.0001098633,0.001538086,0
+cartesian,207,4.705705E-14,25,-180,0,8.827813E-32
+robot_status,connected (state 4)
 robot_mode_status,real confirmed
 safety_status,self collision enabled
 diagnostic_status,ready
 diagnostic_network,web port 18333 reachable
 diagnostic_sdk,SDK telemetry OK
-command_mode,none
-command_sequence,0
-command_status,idle
-validation_valid,0
-validation_status,not validated
-validation_target,0,0,0,0,0,0
-validation_joints,0,0,0,0,0,0
-ik_valid,0
-ik_joints,0,0,0,0,0,0
+command_mode,stop_motion
+command_sequence,8
+command_status,stop command #8 sent
+validation_valid,1
+validation_status,validation ok
+validation_target,227,0,25,180,0,0
+validation_joints,0.0001966146,2.169777,-3.724985,0.000573472,1.555207,-0.0003769272
+ik_valid,1
+ik_joints,0.0001966146,2.169777,-3.724985,0.000573472,1.555207,-0.0003769272
