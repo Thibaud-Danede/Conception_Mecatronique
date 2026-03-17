@@ -1,35 +1,71 @@
+// ============================================================================
+// Configuration centralisee du sketch.
+// Ce fichier ne contient pas de logique executable: il expose seulement des
+// constantes et reglages relus par les autres modules.
+//
+// Les dependances principales sont:
+// - RobotBridge.pde lit la cible IP, le binaire bridge, la cadence et la vitesse.
+// - Robot3DView.pde lit les offsets/signes de calibration live -> modele.
+// - ForceSensor.pde lit le port COM, les timings, les seuils et la loi d'auto-nudge.
+// - MGI.pde et MGD.pde lisent les bornes min/max et les pas de variation.
+// ============================================================================
+
+// Bornes des articulations et de la cible cartesienne.
 float[] joint_min = {-180, -180, -180, -180, -180, -180};
 float[] joint_max = {180, 180, 180, 180, 180, 180};
 float[] cartesian_min = {-600, -600, -600, -180, -180, -180};
 float[] cartesian_max = {600, 600, 600, 180, 180, 180};
 float[] mgi_steps = {5, 5, 5, 5, 5, 5};
 
+// ===== Bridge robot =====
+// Adresse web visible dans le navigateur; le bridge SDK en derive ensuite les
+// connexions utiles. C'est aussi cette valeur qui est ecrite dans le CSV de
+// telemetrie quand le robot n'est pas encore connecte.
 String bridgeTargetIp = "http://192.168.1.227:18333";
+
+// Frequence de polling cote sketch et vitesse par defaut transmise au bridge
+// C#. Le bridge peut ensuite appliquer ses propres gardes-fous.
 int bridgeLaunchPollMs = 60;
 float bridgeMotionSpeed = 12.0;
 boolean bridgeAutoStartEnabled = true;
+
+// Outils de diagnostic et de nettoyage du bridge local. Le nettoyage stale
+// sert surtout quand un ancien RobotPoseBridge.exe traine encore en memoire.
 boolean bridgeDiagnosticLogEnabled = false;
 boolean bridgeKillStaleProcessesOnStart = true;
 int bridgeStaleProcessKillWaitMs = 500;
+
+// Binaire lance par le sketch Processing. Le chemin est relatif au dossier du sketch.
 String bridgeExecutableRelativePath = "RobotPoseBridge/bin/Debug_watchdog/RobotPoseBridge.exe";
 String bridgeCommandFileName = "robot_command.csv";
 
 // ===== Calibration visu 3D (reel -> modele) =====
-// Ces coefficients sont appliques uniquement quand la pose live robot est disponible.
+// Ces coefficients sont appliques uniquement quand la pose live robot est
+// disponible. Ils permettent de compenser une convention d'axes differente
+// entre la telemetrie xArm et les OBJ de la vue 3D.
 float[] robot3d_joint_sign = {1, -1, -1, 1, -1, 1};
 float[] robot3d_joint_offset_deg = {0, 0, 0, 0, 0, 0};
 
 // ===== Capteur HX711 / ESP32 =====
+// Port serie et cadence de lecture du capteur de force. Processing lit ensuite
+// le flux ligne par ligne via serialEvent().
 String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;
 boolean forceSensorAutoConnectOnManualTab = false;
 int forceSensorPollIntervalMs = 80;
 int forceSensorWarmupDelayMs = 1800;
+
+// Tare automatique realisee apres la phase de boot du microcontroleur.
+// Les limites de buffer evitent qu'un port bavard monopolise le sketch.
 boolean forceSensorAutoTareOnConnect = true;
 int forceSensorAutoTareExtraDelayMs = 250;
 int forceSensorDataTimeoutMs = 1500;
 int forceSensorMaxLinesPerUpdate = 12;
 int forceSensorMaxBufferedBytes = 2048;
+
+// Parametres du "force auto nudge": conversion force -> vitesse outil en Z.
+// La chaine complete est:
+// mesure capteur -> filtre -> deadband/hysteresis -> vitesse cible -> bridge.
 boolean forceSensorAutoNudgeEnabled = true;
 float forceSensorAutoNudgeDeadbandN = 1.0;
 float forceSensorAutoNudgeHysteresisN = 0.25;
