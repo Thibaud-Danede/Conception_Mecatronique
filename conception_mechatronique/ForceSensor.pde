@@ -25,6 +25,9 @@ float forceBtnReconnectY = 0;
 float forceBtnReconnectW = 0;
 float forceBtnReconnectH = 0;
 
+
+float[] Cartesian = {0, 0, 0, 0, 0, 0};
+
 void setupForceSensor() {
   forceSensorStatus = forceSensorAutoConnectOnManualTab
     ? "waiting for manual tab"
@@ -203,6 +206,16 @@ void parseForceSensorLine(String line) {
       forceSensorUnit = parts[1];
       lastForceSensorResponseMs = millis();
       forceSensorStatus = "live";
+      
+      if (forceSensorValue >0.5){
+        Cartesian = getCartesian();
+        
+        Cartesian[2]--;
+        sendRobotCommand("cartesian_ik_validate", Cartesian);
+        sendRobotCommand("cartesian_ik_execute", Cartesian);
+        
+      }
+      
     }
     return;
   }

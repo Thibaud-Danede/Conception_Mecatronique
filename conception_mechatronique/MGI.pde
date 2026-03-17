@@ -544,3 +544,7 @@ float parseMgiInputValue(String rawText) {
     return Float.NaN;
   }
 }
+
+float[] getCartesian(){
+  return cartesian;
+}
