@@ -131,21 +131,22 @@ void requestRobotBridgeReconnect() {
 }
 
 void resetRobotCommandFile() {
-  File commandFile = new File(robotCommandPath);
-  if (commandFile.exists()) {
-    commandFile.delete();
-  }
   bridgeCommandStatus = "idle";
   bridgeCommandSequence = 0;
   bridgeReportedCommandMode = "none";
   bridgeReportedCommandSequence = 0;
+  if (robotCommandPath.length() > 0) {
+    String[] lines = {
+      "sequence,0",
+      "timestamp," + buildRobotBridgeTimestamp(),
+      "mode,none",
+      "values,0,0,0,0,0,0"
+    };
+    saveStrings(robotCommandPath, lines);
+  }
 }
 
 void resetRobotPoseFile() {
-  File poseFile = new File(robotPosePath);
-  if (poseFile.exists()) {
-    poseFile.delete();
-  }
   hasRobotConnection = false;
   hasLiveRobotPose = false;
   liveRobotStatus = "waiting for bridge";
@@ -157,6 +158,31 @@ void resetRobotPoseFile() {
   lastRobotUpdateMs = -1;
   zeroFloatArray(liveJoints);
   zeroFloatArray(liveCartesian);
+  if (robotPosePath.length() > 0) {
+    String[] lines = {
+      "connected,0",
+      "timestamp," + buildRobotBridgeTimestamp(),
+      "ip," + bridgeTargetIp,
+      "real_ready,0",
+      "safety_ready,0",
+      "joints,0,0,0,0,0,0",
+      "cartesian,0,0,0,0,0,0",
+      "robot_status," + liveRobotStatus,
+      "robot_mode_status," + liveRobotModeStatus,
+      "safety_status," + liveSafetyStatus,
+      "diagnostic_status," + liveDiagnosticStatus,
+      "diagnostic_network," + liveDiagnosticNetwork,
+      "diagnostic_sdk," + liveDiagnosticSdk,
+      "command_mode,none",
+      "command_sequence,0",
+      "command_status,idle",
+      "validation_valid,0",
+      "validation_status,not validated",
+      "validation_target,0,0,0,0,0,0",
+      "validation_joints,0,0,0,0,0,0"
+    };
+    saveStrings(robotPosePath, lines);
+  }
 }
 
 void clearBridgeRuntimeState() {
@@ -463,6 +489,10 @@ String[] formatFloatArray(float[] values) {
     formatted[i] = str(values[i]);
   }
   return formatted;
+}
+
+String buildRobotBridgeTimestamp() {
+  return year() + "-" + nf(month(), 2) + "-" + nf(day(), 2) + "T" + nf(hour(), 2) + ":" + nf(minute(), 2) + ":" + nf(second(), 2);
 }
 
 String buildFooterStatus() {
