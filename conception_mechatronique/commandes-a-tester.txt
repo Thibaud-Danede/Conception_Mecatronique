@@ -3,3 +3,10 @@ Dans powershell:
 Test-NetConnection 192.168.1.227 -Port 18333
 Test-NetConnection 192.168.1.227 -Port 502
 Test-NetConnection 192.168.1.227 -Port 30002
+
+& 'C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatronique\RobotPoseBridge\bin\Debug\RobotPoseBridge.exe' `
+  --ip 'http://192.168.1.227:18333' `
+  --pose-file 'C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatronique\robot_pose.csv' `
+  --command-file 'C:\WORKSPACE\Conception_Mecatronique\Conception_Mecatronique\conception_mechatronique\robot_command.csv' `
+  --poll-ms 200 `
+  --motion-speed 12
