@@ -25,8 +25,21 @@ float forceBtnReconnectY = 0;
 float forceBtnReconnectW = 0;
 float forceBtnReconnectH = 0;
 
-
 float[] Cartesian = {0, 0, 0, 0, 0, 0};
+
+// ---------- Pilotage continu en Z par effort ----------
+int lastForceRobotCommandMs = -1000;
+
+float forceDeadbandN = 0.5;            // zone morte +/- 0.5 N
+float forceMinStepZmm = 0.20;          // pas mini par commande
+float forceMaxStepZmm = 2.50;          // pas maxi par commande
+float forceUsableMaxN = 8.0;           // au-dessus, on sature la vitesse
+float forceHardClampN = 12.0;          // sécurité si mauvaise calibration
+float forceFilterAlpha = 0.20;         // filtre lissage 0..1
+int forceCommandIntervalMs = 180;      // période des commandes continues
+
+float filteredForceN = 0.0;
+boolean filteredForceInitialized = false;
 
 void setupForceSensor() {
   forceSensorStatus = forceSensorAutoConnectOnManualTab
@@ -54,12 +67,14 @@ void updateForceSensor() {
   }
 
   if (forceSensorCalibrationPending) {
+    stopDirectRobotStepMotion();
     return;
   }
 
   int now = millis();
 
   if (now - forceSensorStartupMs < forceSensorWarmupDelayMs) {
+    stopDirectRobotStepMotion();
     forceSensorStatus = "connected - booting";
     return;
   }
@@ -70,8 +85,11 @@ void updateForceSensor() {
   }
 
   if (lastForceSensorResponseMs >= 0 && now - lastForceSensorResponseMs > forceSensorDataTimeoutMs) {
+    stopDirectRobotStepMotion();
     forceSensorStatus = "connected - timeout";
   }
+
+  applyContinuousForceToRobotZ();
 }
 
 void openForceSensorPort() {
@@ -87,6 +105,10 @@ void openForceSensorPort() {
     forceSensorStartupMs = millis();
     lastForceSensorRequestMs = -1000;
     lastForceSensorResponseMs = -1;
+    lastForceRobotCommandMs = -1000;
+    filteredForceN = 0.0;
+    filteredForceInitialized = false;
+
     forceSensorStatus = "connected - booting";
   }
   catch (Exception ex) {
@@ -119,6 +141,8 @@ void requestForceSensorCalibration() {
   forceSensorCalibrationPending = true;
   forceSensorCalibrationStep = 0;
   forceSensorCalibrationNextActionMs = millis();
+  filteredForceN = 0.0;
+  filteredForceInitialized = false;
   forceSensorStatus = "calibration queued";
 }
 
@@ -148,6 +172,8 @@ void updateForceSensorCalibration() {
       forceSensorCalibrationStep = 0;
       forceSensorCalibrationNextActionMs = -1;
       lastForceSensorRequestMs = now;
+      filteredForceN = 0.0;
+      filteredForceInitialized = false;
       forceSensorStatus = "calibration done";
     }
   }
@@ -171,7 +197,6 @@ void readForceSensorSerial() {
 
   int processedLines = 0;
 
-  // Keep the animation thread responsive even if the wrong COM port is noisy.
   while (forceSensorPort != null && forceSensorPort.available() > 0 && processedLines < forceSensorMaxLinesPerUpdate) {
     String line = forceSensorPort.readStringUntil('\n');
 
@@ -205,17 +230,8 @@ void parseForceSensorLine(String line) {
       forceSensorValue = parseFloatSafe(parts[0], forceSensorValue);
       forceSensorUnit = parts[1];
       lastForceSensorResponseMs = millis();
+      updateFilteredForce();
       forceSensorStatus = "live";
-      
-      if (forceSensorValue >0.5){
-        Cartesian = getCartesian();
-        
-        Cartesian[2]--;
-        sendRobotCommand("cartesian_ik_validate", Cartesian);
-        sendRobotCommand("cartesian_ik_execute", Cartesian);
-        
-      }
-      
     }
     return;
   }
@@ -234,10 +250,97 @@ void parseForceSensorLine(String line) {
   }
 }
 
+void updateFilteredForce() {
+  float rawN = getForceSensorValueN();
+
+  if (Float.isNaN(rawN) || Float.isInfinite(rawN)) {
+    rawN = 0.0;
+  }
+
+  rawN = constrain(rawN, -forceHardClampN, forceHardClampN);
+
+  if (!filteredForceInitialized) {
+    filteredForceN = rawN;
+    filteredForceInitialized = true;
+  } else {
+    filteredForceN = lerp(filteredForceN, rawN, forceFilterAlpha);
+  }
+}
+
+float getFilteredForceSensorValueN() {
+  if (!filteredForceInitialized) {
+    return 0.0;
+  }
+  return filteredForceN;
+}
+
+void applyContinuousForceToRobotZ() {
+  if (menus != 2) {
+    stopDirectRobotStepMotion();
+    return;
+  }
+
+  if (forceSensorCalibrationPending) {
+    stopDirectRobotStepMotion();
+    return;
+  }
+
+  if (!isForceSensorFresh()) {
+    stopDirectRobotStepMotion();
+    return;
+  }
+
+  if (!hasRobotConnection || !bridgeRealReady || !bridgeSafetyReady) {
+    stopDirectRobotStepMotion();
+    return;
+  }
+
+  int now = millis();
+  if (now - lastForceRobotCommandMs < forceCommandIntervalMs) {
+    return;
+  }
+
+  float forceN = getFilteredForceSensorValueN();
+
+  if (abs(forceN) <= forceDeadbandN) {
+    stopDirectRobotStepMotion();
+    return;
+  }
+
+  float effort = abs(forceN) - forceDeadbandN;
+  float effortSpan = max(0.001, forceUsableMaxN - forceDeadbandN);
+  float normalized = constrain(effort / effortSpan, 0.0, 1.0);
+
+  float speedPercent = 0.10 + normalized * 0.75;
+
+  boolean commandSent = false;
+
+  // force > +0.5 N : baisse en Z
+  // force < -0.5 N : monte en Z
+  if (forceN > forceDeadbandN) {
+    commandSent = requestDirectRobotZStream(-speedPercent);
+  } else if (forceN < -forceDeadbandN) {
+    commandSent = requestDirectRobotZStream(+speedPercent);
+  }
+
+  if (commandSent) {
+    lastForceRobotCommandMs = now;
+
+    if (forceN > 0) {
+      forceSensorStatus = "live - z down direct";
+    } else {
+      forceSensorStatus = "live - z up direct";
+    }
+  }
+}
+
 void closeForceSensorPort() {
   forceSensorCalibrationPending = false;
   forceSensorCalibrationStep = 0;
   forceSensorCalibrationNextActionMs = -1;
+  filteredForceN = 0.0;
+  filteredForceInitialized = false;
+  stopDirectRobotStepMotion();
 
   if (forceSensorPort != null) {
     try {
@@ -272,7 +375,7 @@ String getForceSensorPrimaryLabel() {
   if (lastForceSensorResponseMs < 0) {
     return "--.-- N";
   }
-  return nf(getForceSensorValueN(), 1, 2) + " N";
+  return nf(getFilteredForceSensorValueN(), 1, 2) + " N";
 }
 
 String getForceSensorSecondaryLabel() {
@@ -343,6 +446,8 @@ void drawForceSensorCard(float x, float y, float w, float h) {
   } else {
     text("Age mesure : --", rightX, y + 50);
   }
+
+  text("Force filtrée : " + nf(getFilteredForceSensorValueN(), 1, 2) + " N", rightX, y + 68);
 
   float btnY = y + h - 42;
   float btnH = 28;

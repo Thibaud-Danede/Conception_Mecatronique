@@ -35,6 +35,32 @@ int bridgeCommandSequence = 0;
 boolean bridgeReconnectInProgress = false;
 int bridgeReconnectStartMs = -1;
 
+boolean bridgeHasPendingCommand = false;
+String bridgePendingCommandMode = "none";
+float[] bridgePendingCommandValues = {0, 0, 0, 0, 0, 0};
+int bridgeLastCommandWriteMs = -1000;
+int bridgeCommandWriteMinGapMs = 120;
+
+
+java.net.http.HttpClient directRobotHttpClient = null;
+java.net.http.WebSocket directRobotWebSocket = null;
+boolean directRobotWsReady = false;
+boolean directRobotWsConnecting = false;
+int directRobotWsLastConnectAttemptMs = -1000;
+int directRobotWsReconnectIntervalMs = 1000;
+int directRobotWsMessageCounter = 0;
+String directRobotWsStatus = "direct ws idle";
+float directRobotSpeedPercent = 0.45;
+float directRobotLastSpeedPercentSent = -1.0;
+boolean directRobotCartesianContinuousEnabled = false;
+
+boolean directRobotStepLoopActive = false;
+String directRobotStepDirection = "";
+int directRobotStepLastKeepAliveMs = -1000;
+int directRobotStepKeepAliveMs = 120;
+int directRobotStepLastCommandMs = -1000;
+int directRobotStepMinGapMs = 60;
+
 void setupRobotBridge() {
   robotPosePath = sketchPath("robot_pose.csv");
   robotCommandPath = sketchPath(bridgeCommandFileName);
@@ -42,6 +68,7 @@ void setupRobotBridge() {
   resetRobotCommandFile();
   clearBridgeRuntimeState();
   setupLocalRobotBridge();
+  setupDirectRobotControl();
   loadRobotPoseFromBridge();
 }
 
@@ -93,6 +120,8 @@ void startRobotBridgeProcess() {
 
 public void dispose() {
   closeForceSensorPort();
+  stopDirectRobotStepMotion();
+  closeDirectRobotSocket();
   stopRobotBridgeProcess();
 }
 
@@ -135,6 +164,9 @@ void resetRobotCommandFile() {
   bridgeCommandSequence = 0;
   bridgeReportedCommandMode = "none";
   bridgeReportedCommandSequence = 0;
+  bridgeLastCommandWriteMs = -1000;
+  clearPendingRobotCommand();
+
   if (robotCommandPath.length() > 0) {
     String[] lines = {
       "sequence,0",
@@ -142,7 +174,13 @@ void resetRobotCommandFile() {
       "mode,none",
       "values,0,0,0,0,0,0"
     };
-    saveStrings(robotCommandPath, lines);
+
+    try {
+      saveStrings(robotCommandPath, lines);
+    }
+    catch (Exception ex) {
+      bridgeCommandStatus = "reset pending (file busy)";
+    }
   }
 }
 
@@ -194,7 +232,348 @@ void clearBridgeRuntimeState() {
   zeroFloatArray(bridgeValidationJoints);
 }
 
+void setupDirectRobotControl() {
+  if (directRobotHttpClient == null) {
+    try {
+      directRobotHttpClient = java.net.http.HttpClient.newBuilder()
+        .connectTimeout(java.time.Duration.ofMillis(900))
+        .build();
+      directRobotWsStatus = "direct ws client ready";
+    }
+    catch (Exception ex) {
+      directRobotWsStatus = "direct ws client error";
+    }
+  }
+}
+
+void updateDirectRobotControl() {
+  if (directRobotWebSocket == null && !directRobotWsConnecting) {
+    ensureDirectRobotSocket();
+  }
+
+  if (directRobotStepLoopActive && directRobotWsReady) {
+    int now = millis();
+    if (now - directRobotStepLastKeepAliveMs >= directRobotStepKeepAliveMs) {
+      sendDirectRobotMoveStepOnline();
+      directRobotStepLastKeepAliveMs = now;
+    }
+  }
+}
+
+String buildDirectRobotWsUrl() {
+  String rawBase = trim(bridgeTargetIp);
+  if (rawBase.length() == 0) {
+    return "";
+  }
+
+  if (!rawBase.startsWith("http://") && !rawBase.startsWith("https://") && !rawBase.startsWith("ws://") && !rawBase.startsWith("wss://")) {
+    rawBase = "http://" + rawBase;
+  }
+
+  try {
+    java.net.URI httpUri = java.net.URI.create(rawBase);
+    String host = httpUri.getHost();
+    int port = httpUri.getPort();
+
+    if (host == null || host.length() == 0) {
+      return "";
+    }
+
+    if (port < 0) {
+      port = 18333;
+    }
+
+    return "ws://" + host + ":" + port + "/ws";
+  }
+  catch (Exception ex) {
+    return "";
+  }
+}
+
+void ensureDirectRobotSocket() {
+  if (directRobotWsReady || directRobotWsConnecting) {
+    return;
+  }
+
+  if (directRobotHttpClient == null) {
+    setupDirectRobotControl();
+  }
+
+  String wsUrl = buildDirectRobotWsUrl();
+  if (wsUrl.length() == 0) {
+    directRobotWsStatus = "direct ws url invalid";
+    return;
+  }
+
+  if (millis() - directRobotWsLastConnectAttemptMs < directRobotWsReconnectIntervalMs) {
+    return;
+  }
+
+  directRobotWsLastConnectAttemptMs = millis();
+  directRobotWsConnecting = true;
+  directRobotWsStatus = "direct ws connecting";
+
+  try {
+    directRobotWebSocket = directRobotHttpClient.newWebSocketBuilder()
+      .buildAsync(java.net.URI.create(wsUrl), new java.net.http.WebSocket.Listener() {
+        public void onOpen(java.net.http.WebSocket webSocket) {
+          directRobotWsReady = true;
+          directRobotWsConnecting = false;
+          directRobotWsStatus = "direct ws connected";
+          webSocket.request(1);
+        }
+
+        public java.util.concurrent.CompletionStage<?> onText(java.net.http.WebSocket webSocket, CharSequence data, boolean last) {
+          directRobotWsStatus = "direct ws connected";
+          webSocket.request(1);
+          return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+
+        public java.util.concurrent.CompletionStage<?> onClose(java.net.http.WebSocket webSocket, int statusCode, String reason) {
+          directRobotWsReady = false;
+          directRobotWsConnecting = false;
+          directRobotWebSocket = null;
+          directRobotCartesianContinuousEnabled = false;
+          directRobotStepLoopActive = false;
+          directRobotStepDirection = "";
+          directRobotWsStatus = "direct ws closed";
+          return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+
+        public void onError(java.net.http.WebSocket webSocket, Throwable error) {
+          directRobotWsReady = false;
+          directRobotWsConnecting = false;
+          directRobotWebSocket = null;
+          directRobotCartesianContinuousEnabled = false;
+          directRobotStepLoopActive = false;
+          directRobotStepDirection = "";
+          directRobotWsStatus = "direct ws error";
+        }
+      }).join();
+  }
+  catch (Exception ex) {
+    directRobotWsReady = false;
+    directRobotWsConnecting = false;
+    directRobotWebSocket = null;
+    directRobotWsStatus = "direct ws connect failed";
+  }
+}
+
+void closeDirectRobotSocket() {
+  if (directRobotWebSocket != null) {
+    try {
+      directRobotWebSocket.sendClose(java.net.http.WebSocket.NORMAL_CLOSURE, "bye");
+    }
+    catch (Exception ex) {
+    }
+  }
+
+  directRobotWebSocket = null;
+  directRobotWsReady = false;
+  directRobotWsConnecting = false;
+  directRobotCartesianContinuousEnabled = false;
+  directRobotStepLoopActive = false;
+  directRobotStepDirection = "";
+  directRobotWsStatus = "direct ws closed";
+}
+
+String nextDirectRobotMessageId() {
+  directRobotWsMessageCounter++;
+  return "pde_" + directRobotWsMessageCounter;
+}
+
+boolean sendDirectRobotWs(String jsonPayload) {
+  ensureDirectRobotSocket();
+
+  if (!directRobotWsReady || directRobotWebSocket == null) {
+    directRobotWsStatus = "direct ws unavailable";
+    return false;
+  }
+
+  try {
+    directRobotWebSocket.sendText(jsonPayload, true);
+    return true;
+  }
+  catch (Exception ex) {
+    directRobotWsReady = false;
+    directRobotWsConnecting = false;
+    directRobotWebSocket = null;
+    directRobotWsStatus = "direct ws send failed";
+    return false;
+  }
+}
+
+float clampDirectRobotSpeedPercent(float percent) {
+  return constrain(percent, 0.05, 1.0);
+}
+
+String formatJsonNumber(float value) {
+  return nf(value, 1, 4);
+}
+
+boolean sendDirectRobotSetSpeed(float percent) {
+  float clampedPercent = clampDirectRobotSpeedPercent(percent);
+
+  if (abs(clampedPercent - directRobotLastSpeedPercentSent) < 0.02) {
+    directRobotSpeedPercent = clampedPercent;
+    return true;
+  }
+
+  String jsonPayload = "{\"cmd\":\"xarm_set_speed\",\"data\":{\"percent\":" + formatJsonNumber(clampedPercent) + "},\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+  boolean sent = sendDirectRobotWs(jsonPayload);
+  if (sent) {
+    directRobotSpeedPercent = clampedPercent;
+    directRobotLastSpeedPercentSent = clampedPercent;
+  }
+  return sent;
+}
+
+boolean sendDirectRobotSwitchMode(int mode) {
+  String jsonPayload = "{\"cmd\":\"xarm_switch_mode\",\"data\":{\"mode\":" + mode + "},\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+  return sendDirectRobotWs(jsonPayload);
+}
+
+boolean sendDirectRobotCartesianContinuous(boolean onOff) {
+  if (directRobotCartesianContinuousEnabled == onOff) {
+    return true;
+  }
+
+  String jsonPayload = "{\"cmd\":\"set_cartesian_velo_continuous\",\"data\":{\"on_off\":" + (onOff ? "true" : "false") + "},\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+  boolean sent = sendDirectRobotWs(jsonPayload);
+  if (sent) {
+    directRobotCartesianContinuousEnabled = onOff;
+  }
+  return sent;
+}
+
+boolean sendDirectRobotMoveStepStart(String direction) {
+  String jsonPayload = "{\"cmd\":\"xarm_move_step\",\"data\":{\"isLoop\":true,\"direction\":\"" + direction + "\",\"isMoveTool\":false},\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+  return sendDirectRobotWs(jsonPayload);
+}
+
+boolean sendDirectRobotMoveStepOnline() {
+  String jsonPayload = "{\"cmd\":\"xarm_move_step_online\",\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+  return sendDirectRobotWs(jsonPayload);
+}
+
+boolean sendDirectRobotMoveStepOver() {
+  String jsonPayload = "{\"cmd\":\"xarm_move_step_over\",\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+  return sendDirectRobotWs(jsonPayload);
+}
+
+boolean requestDirectRobotZStream(float signedPercent) {
+  if (!hasRobotConnection || !bridgeRealReady || !bridgeSafetyReady) {
+    bridgeCommandStatus = "direct step blocked: " + getMotionBlockReason();
+    stopDirectRobotStepMotion();
+    return false;
+  }
+
+  float requestedPercent = clampDirectRobotSpeedPercent(abs(signedPercent));
+  String requestedDirection = signedPercent > 0 ? "position-z-increase" : "position-z-decrease";
+
+  if (!sendDirectRobotSetSpeed(requestedPercent)) {
+    bridgeCommandStatus = "direct step blocked: ws unavailable";
+    return false;
+  }
+
+  sendDirectRobotCartesianContinuous(true);
+  sendDirectRobotSwitchMode(2);
+
+  int now = millis();
+
+  if (!directRobotStepLoopActive || !requestedDirection.equals(directRobotStepDirection)) {
+    if (directRobotStepLoopActive) {
+      sendDirectRobotMoveStepOver();
+    }
+
+    boolean started = sendDirectRobotMoveStepStart(requestedDirection);
+    if (!started) {
+      bridgeCommandStatus = "direct step start failed";
+      return false;
+    }
+
+    directRobotStepLoopActive = true;
+    directRobotStepDirection = requestedDirection;
+    directRobotStepLastKeepAliveMs = now;
+    directRobotStepLastCommandMs = now;
+    bridgeCommandStatus = "direct step " + requestedDirection;
+    return true;
+  }
+
+  if (now - directRobotStepLastCommandMs >= directRobotStepMinGapMs) {
+    sendDirectRobotMoveStepOnline();
+    directRobotStepLastKeepAliveMs = now;
+    directRobotStepLastCommandMs = now;
+  }
+
+  bridgeCommandStatus = "direct step " + requestedDirection;
+  return true;
+}
+
+void stopDirectRobotStepMotion() {
+  if (directRobotStepLoopActive) {
+    sendDirectRobotMoveStepOver();
+  }
+
+  directRobotStepLoopActive = false;
+  directRobotStepDirection = "";
+  directRobotStepLastKeepAliveMs = -1000;
+  directRobotStepLastCommandMs = -1000;
+}
+
+boolean sendDirectRobotCartesianCommand(float[] targetCartesian) {
+  return sendDirectRobotCartesianCommand(targetCartesian, 0.70, false);
+}
+
+boolean sendDirectRobotCartesianCommand(float[] targetCartesian, float speedPercent, boolean waitMotion) {
+  if (targetCartesian == null || targetCartesian.length < 6) {
+    return false;
+  }
+
+  if (!hasRobotConnection || !bridgeRealReady || !bridgeSafetyReady) {
+    bridgeCommandStatus = "direct cartesian blocked: " + getMotionBlockReason();
+    return false;
+  }
+
+  stopDirectRobotStepMotion();
+
+  if (!sendDirectRobotSetSpeed(speedPercent)) {
+    bridgeCommandStatus = "direct cartesian blocked: ws unavailable";
+    return false;
+  }
+
+  sendDirectRobotCartesianContinuous(true);
+  sendDirectRobotSwitchMode(0);
+
+  String jsonPayload = "{\"cmd\":\"xarm_move_arc_line\",\"data\":{" +
+    "\"X\":" + formatJsonNumber(targetCartesian[0]) + "," +
+    "\"Y\":" + formatJsonNumber(targetCartesian[1]) + "," +
+    "\"Z\":" + formatJsonNumber(targetCartesian[2]) + "," +
+    "\"A\":" + formatJsonNumber(targetCartesian[3]) + "," +
+    "\"B\":" + formatJsonNumber(targetCartesian[4]) + "," +
+    "\"C\":" + formatJsonNumber(targetCartesian[5]) + "," +
+    "\"R\":0," +
+    "\"relative\":false," +
+    "\"wait\":" + (waitMotion ? "true" : "false") + "," +
+    "\"isControl\":true," +
+    "\"module\":\"blockly\"," +
+    "\"isClickMove\":false," +
+    "\"mode\":0" +
+    "},\"id\":\"" + nextDirectRobotMessageId() + "\"}";
+
+  boolean sent = sendDirectRobotWs(jsonPayload);
+  if (sent) {
+    bridgeCommandStatus = "direct cartesian sent";
+  } else {
+    bridgeCommandStatus = "direct cartesian failed";
+  }
+  return sent;
+}
+
 void updateRobotBridge() {
+  updateDirectRobotControl();
+  flushPendingRobotCommand();
+
   if (millis() - lastRobotPollMs < robotPollIntervalMs) {
     updateReconnectState();
     return;
@@ -202,6 +581,7 @@ void updateRobotBridge() {
 
   lastRobotPollMs = millis();
   loadRobotPoseFromBridge();
+  flushPendingRobotCommand();
   updateReconnectState();
 }
 
@@ -442,17 +822,60 @@ void sendRobotCommand(String mode, float[] values) {
     return;
   }
 
-  bridgeCommandSequence++;
+  bridgePendingCommandMode = mode;
+  arrayCopy(values, bridgePendingCommandValues);
+  bridgeHasPendingCommand = true;
+  bridgeCommandStatus = mode + " pending";
+
+  flushPendingRobotCommand();
+}
+
+boolean flushPendingRobotCommand() {
+  if (!bridgeHasPendingCommand) {
+    return false;
+  }
+
+  if (robotCommandPath == null || robotCommandPath.length() == 0) {
+    bridgeCommandStatus = "command path missing";
+    return false;
+  }
+
+  int now = millis();
+  if (now - bridgeLastCommandWriteMs < bridgeCommandWriteMinGapMs) {
+    return false;
+  }
+
+  int nextSequence = bridgeCommandSequence + 1;
+
   String[] lines = {
-    "sequence," + bridgeCommandSequence,
-    "timestamp," + year() + "-" + nf(month(), 2) + "-" + nf(day(), 2) + "T" + nf(hour(), 2) + ":" + nf(minute(), 2) + ":" + nf(second(), 2),
-    "mode," + mode,
-    "values," + join(formatFloatArray(values), ",")
+    "sequence," + nextSequence,
+    "timestamp," + buildRobotBridgeTimestamp(),
+    "mode," + bridgePendingCommandMode,
+    "values," + join(formatFloatArray(bridgePendingCommandValues), ",")
   };
-  saveStrings(robotCommandPath, lines);
-  bridgeReportedCommandMode = mode;
-  bridgeReportedCommandSequence = bridgeCommandSequence;
-  bridgeCommandStatus = mode + " #" + bridgeCommandSequence + " queued";
+
+  try {
+    saveStrings(robotCommandPath, lines);
+
+    bridgeCommandSequence = nextSequence;
+    bridgeReportedCommandMode = bridgePendingCommandMode;
+    bridgeReportedCommandSequence = bridgeCommandSequence;
+    bridgeCommandStatus = bridgePendingCommandMode + " #" + bridgeCommandSequence + " queued";
+    bridgeLastCommandWriteMs = now;
+    bridgeHasPendingCommand = false;
+    return true;
+  }
+  catch (Exception ex) {
+    bridgeCommandStatus = bridgePendingCommandMode + " pending (file busy)";
+    bridgeLastCommandWriteMs = now;
+    return false;
+  }
+}
+
+void clearPendingRobotCommand() {
+  bridgeHasPendingCommand = false;
+  bridgePendingCommandMode = "none";
+  zeroFloatArray(bridgePendingCommandValues);
 }
 
 boolean canQueueBridgeRequest() {
@@ -500,10 +923,10 @@ String buildFooterStatus() {
   String connectionLabel = hasRobotConnection ? "xArm CONNECTED" : "xArm DISCONNECTED";
   if (hasLiveRobotPose) {
     int ageMs = max(0, millis() - lastRobotUpdateMs);
-    return connectionLabel + " | " + liveRobotModeStatus + " | " + liveSafetyStatus + " | X: " + nf(liveCartesian[0], 1, 1) + " | Y: " + nf(liveCartesian[1], 1, 1) + " | Z: " + nf(liveCartesian[2], 1, 1) + " | " + bridgeCommandStatus + " | bridge: " + bridgeStatus + " | age: " + ageMs + " ms";
+    return connectionLabel + " | " + liveRobotModeStatus + " | " + liveSafetyStatus + " | X: " + nf(liveCartesian[0], 1, 1) + " | Y: " + nf(liveCartesian[1], 1, 1) + " | Z: " + nf(liveCartesian[2], 1, 1) + " | " + bridgeCommandStatus + " | ws: " + directRobotWsStatus + " | bridge: " + bridgeStatus + " | age: " + ageMs + " ms";
   }
 
-  return connectionLabel + " | " + liveRobotStatus + " | diag: " + liveDiagnosticStatus + " | net: " + liveDiagnosticNetwork + " | sdk: " + liveDiagnosticSdk + " | bridge: " + bridgeStatus;
+  return connectionLabel + " | " + liveRobotStatus + " | diag: " + liveDiagnosticStatus + " | net: " + liveDiagnosticNetwork + " | sdk: " + liveDiagnosticSdk + " | ws: " + directRobotWsStatus + " | bridge: " + bridgeStatus;
 }
 
 void drawLiveTelemetryCard() {
@@ -539,6 +962,7 @@ void drawLiveTelemetryCard() {
   text("Net: " + liveDiagnosticNetwork, cardX + 14, cardY + 110);
   text("SDK: " + liveDiagnosticSdk, cardX + 14, cardY + 126);
   text("Bridge: " + bridgeStatus, cardX + 14, cardY + 142);
+  text("WS: " + directRobotWsStatus, cardX + 170, cardY + 142);
   text("CMD: " + bridgeCommandStatus, cardX + 14, cardY + 158);
   textAlign(LEFT, CENTER);
 }
