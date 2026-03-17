@@ -270,8 +270,10 @@ boolean handleMgiActionButtonClick(float px, float py) {
   if (isPointInRect(px, py, startX, buttonY, useLiveWidth, buttonHeight)) {
     if (hasLiveRobotPose) {
       syncMgiInputsFromTarget(liveCartesian);
+      fill(0, 255, 100); 
       mgiLocalStatus = "Live pose loaded. Validate before sending.";
     } else {
+      fill(255, 80, 80);
       mgiLocalStatus = "Live pose unavailable. Wait for a real robot pose or reconnect.";
     }
     clearMgiActiveField();

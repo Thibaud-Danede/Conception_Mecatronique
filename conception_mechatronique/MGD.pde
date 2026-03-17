@@ -21,15 +21,23 @@ void draw_menus_1() {
   fill(150);
   textSize(constrain(width / 105.0, 10, 13));
   textAlign(LEFT, TOP);
+  if (hasLiveRobotPose) {
+    fill(0, 255, 100); 
+  } else {
+    fill(255, 80, 80);  
+  }
+
   text(
     hasLiveRobotPose
-      ? "Drag a slider, then release to send the joint target to the robot."
-      : "Offline mode: sliders move locally only.",
+    ? "Connected: Drag a slider to send targets to the robot."
+    : "Offline mode: Sliders move locally only.",
     marginX,
     subtitleY,
     width - (2 * marginX),
     32
-  );
+    );
+
+  fill(150);
   textAlign(LEFT, CENTER);
 
   for (int i = 0; i < 6; i++) {
@@ -48,7 +56,7 @@ void draw_menus_1() {
       joints[i],
       joint_min[i],
       joint_max[i]
-    );
+      );
   }
 
   float vizX = marginX;
