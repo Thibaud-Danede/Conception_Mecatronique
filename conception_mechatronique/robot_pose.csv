@@ -1,5 +1,5 @@
 connected,0
-timestamp,2026-03-17T11:27:20.4234709+01:00
+timestamp,2026-03-17T11:43:45.9284913+01:00
 ip,http://192.168.1.227:18333
 real_ready,0
 safety_ready,0
@@ -12,7 +12,7 @@ diagnostic_status,network issue
 diagnostic_network,web port 18333 unreachable
 diagnostic_sdk,telemetry failed (pose -1, state -1)
 command_mode,cartesian_ik_execute
-command_sequence,54
+command_sequence,44
 command_status,bridge error
 validation_valid,0
 validation_status,not validated
