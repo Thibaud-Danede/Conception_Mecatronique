@@ -1,7 +1,6 @@
 Serial forceSensorPort = null;
 
-boolean forceSensorConnected = false;
-String forceSensorStatus = "not initialized";
+String forceSensorStatus = "sensor idle";
 String forceSensorResolvedPort = "";
 String forceSensorLastLine = "";
 float forceSensorValue = 0.0;
@@ -10,9 +9,12 @@ String forceSensorUnit = "Kg";
 int lastForceSensorRequestMs = -1000;
 int lastForceSensorResponseMs = -1;
 int forceSensorStartupMs = -1;
-int lastForceSensorConnectAttemptMs = -10000;
+boolean forceSensorAutoConnectAttempted = false;
 
-// Boutons UI
+boolean forceSensorCalibrationPending = false;
+int forceSensorCalibrationStep = 0;
+int forceSensorCalibrationNextActionMs = -1;
+
 float forceBtnCalX = 0;
 float forceBtnCalY = 0;
 float forceBtnCalW = 0;
@@ -24,66 +26,33 @@ float forceBtnReconnectW = 0;
 float forceBtnReconnectH = 0;
 
 void setupForceSensor() {
-  openForceSensorPort();
-}
-
-void openForceSensorPort() {
-  lastForceSensorConnectAttemptMs = millis();
-  closeForceSensorPort();
-
-  forceSensorStatus = "searching " + forceSensorComPort;
-  forceSensorResolvedPort = "";
-
-  String[] ports = Serial.list();
-
-  if (ports == null || ports.length == 0) {
-    forceSensorStatus = "no serial port found";
-    return;
-  }
-
-  String wanted = forceSensorComPort.toUpperCase();
-  String matchedPort = "";
-
-  for (String p : ports) {
-    String candidate = p.toUpperCase();
-    if (candidate.equals(wanted) || candidate.indexOf(wanted) >= 0) {
-      matchedPort = p;
-      break;
-    }
-  }
-
-  if (matchedPort.equals("")) {
-    forceSensorStatus = forceSensorComPort + " not found";
-    return;
-  }
-
-  try {
-    forceSensorPort = new Serial(this, matchedPort, forceSensorBaudRate);
-    forceSensorPort.clear();
-
-    forceSensorResolvedPort = matchedPort;
-    forceSensorConnected = true;
-    forceSensorStartupMs = millis();
-    lastForceSensorRequestMs = -1000;
-    lastForceSensorResponseMs = -1;
-    forceSensorStatus = "connected - booting";
-  }
-  catch (Exception ex) {
-    forceSensorPort = null;
-    forceSensorConnected = false;
-    forceSensorStatus = "serial open error";
-  }
+  forceSensorStatus = forceSensorAutoConnectOnManualTab
+    ? "waiting for manual tab"
+    : "ready to connect";
 }
 
 void updateForceSensor() {
+  boolean manualTabVisible = (menus == 2);
+
+  if (manualTabVisible && forceSensorAutoConnectOnManualTab && !forceSensorAutoConnectAttempted && forceSensorPort == null) {
+    forceSensorAutoConnectAttempted = true;
+    openForceSensorPort();
+  }
+
   if (forceSensorPort == null) {
-    if (millis() - lastForceSensorConnectAttemptMs >= forceSensorReconnectIntervalMs) {
-      openForceSensorPort();
-    }
     return;
   }
 
   readForceSensorSerial();
+  updateForceSensorCalibration();
+
+  if (!manualTabVisible && !forceSensorCalibrationPending) {
+    return;
+  }
+
+  if (forceSensorCalibrationPending) {
+    return;
+  }
 
   int now = millis();
 
@@ -97,13 +66,37 @@ void updateForceSensor() {
     lastForceSensorRequestMs = now;
   }
 
-  if (lastForceSensorResponseMs >= 0 && now - lastForceSensorResponseMs > 1500) {
+  if (lastForceSensorResponseMs >= 0 && now - lastForceSensorResponseMs > forceSensorDataTimeoutMs) {
     forceSensorStatus = "connected - timeout";
   }
 }
 
+void openForceSensorPort() {
+  closeForceSensorPort();
+
+  forceSensorResolvedPort = forceSensorComPort;
+  forceSensorStatus = "opening " + forceSensorComPort;
+
+  try {
+    forceSensorPort = new Serial(this, forceSensorComPort, forceSensorBaudRate);
+    forceSensorPort.clear();
+
+    forceSensorStartupMs = millis();
+    lastForceSensorRequestMs = -1000;
+    lastForceSensorResponseMs = -1;
+    forceSensorStatus = "connected - booting";
+  }
+  catch (Exception ex) {
+    forceSensorPort = null;
+    forceSensorResolvedPort = "";
+    forceSensorStatus = "serial open error on " + forceSensorComPort;
+  }
+}
+
 void requestForceSensorMeasurement() {
-  if (forceSensorPort == null) return;
+  if (forceSensorPort == null) {
+    return;
+  }
 
   try {
     forceSensorPort.write("M\n");
@@ -114,35 +107,69 @@ void requestForceSensorMeasurement() {
   }
 }
 
-void requestForceSensorTare() {
+void requestForceSensorCalibration() {
   if (forceSensorPort == null) {
-    forceSensorStatus = "tare impossible - port closed";
+    forceSensorStatus = "calibration impossible - port closed";
+    return;
+  }
+
+  forceSensorCalibrationPending = true;
+  forceSensorCalibrationStep = 0;
+  forceSensorCalibrationNextActionMs = millis();
+  forceSensorStatus = "calibration queued";
+}
+
+void updateForceSensorCalibration() {
+  if (!forceSensorCalibrationPending || forceSensorPort == null) {
+    return;
+  }
+
+  int now = millis();
+  if (now < forceSensorCalibrationNextActionMs) {
     return;
   }
 
   try {
-    forceSensorPort.write("T\n");
-    forceSensorStatus = "tare requested";
-    delay(80);
-    forceSensorPort.write("M\n");
+    if (forceSensorCalibrationStep == 0) {
+      forceSensorPort.write("C\n");
+      forceSensorStatus = "calibration start";
+      forceSensorCalibrationStep = 1;
+      forceSensorCalibrationNextActionMs = now + 300;
+    } else if (forceSensorCalibrationStep == 1) {
+      forceSensorPort.write("Q\n");
+      forceSensorCalibrationStep = 2;
+      forceSensorCalibrationNextActionMs = now + 100;
+    } else {
+      forceSensorPort.write("M\n");
+      forceSensorCalibrationPending = false;
+      forceSensorCalibrationStep = 0;
+      forceSensorCalibrationNextActionMs = -1;
+      lastForceSensorRequestMs = now;
+      forceSensorStatus = "calibration done";
+    }
   }
   catch (Exception ex) {
-    forceSensorStatus = "tare error";
+    forceSensorStatus = "calibration error";
     closeForceSensorPort();
   }
 }
 
 void requestForceSensorReconnect() {
+  forceSensorAutoConnectAttempted = true;
   forceSensorStatus = "reconnecting...";
   closeForceSensorPort();
-  delay(120);
   openForceSensorPort();
 }
 
 void readForceSensorSerial() {
-  if (forceSensorPort == null) return;
+  if (forceSensorPort == null) {
+    return;
+  }
 
-  while (forceSensorPort.available() > 0) {
+  int processedLines = 0;
+
+  // Keep the animation thread responsive even if the wrong COM port is noisy.
+  while (forceSensorPort != null && forceSensorPort.available() > 0 && processedLines < forceSensorMaxLinesPerUpdate) {
     String line = forceSensorPort.readStringUntil('\n');
 
     if (line == null) {
@@ -157,6 +184,12 @@ void readForceSensorSerial() {
 
     forceSensorLastLine = line;
     parseForceSensorLine(line);
+    processedLines++;
+  }
+
+  if (forceSensorPort != null && forceSensorPort.available() > forceSensorMaxBufferedBytes) {
+    forceSensorPort.clear();
+    forceSensorStatus = "serial buffer cleared";
   }
 }
 
@@ -166,8 +199,7 @@ void parseForceSensorLine(String line) {
     String[] parts = splitTokens(payload, " ");
 
     if (parts.length >= 2) {
-      float parsedValue = parseFloatSafe(parts[0], forceSensorValue);
-      forceSensorValue = parsedValue;
+      forceSensorValue = parseFloatSafe(parts[0], forceSensorValue);
       forceSensorUnit = parts[1];
       lastForceSensorResponseMs = millis();
       forceSensorStatus = "live";
@@ -184,16 +216,16 @@ void parseForceSensorLine(String line) {
     return;
   }
 
-  if (line.equals("T")) {
-    return;
-  }
-
-  if (line.equals("M")) {
+  if (line.equals("C") || line.equals("Q") || line.equals("M")) {
     return;
   }
 }
 
 void closeForceSensorPort() {
+  forceSensorCalibrationPending = false;
+  forceSensorCalibrationStep = 0;
+  forceSensorCalibrationNextActionMs = -1;
+
   if (forceSensorPort != null) {
     try {
       forceSensorPort.stop();
@@ -203,11 +235,10 @@ void closeForceSensorPort() {
   }
 
   forceSensorPort = null;
-  forceSensorConnected = false;
 }
 
 boolean isForceSensorFresh() {
-  return lastForceSensorResponseMs >= 0 && (millis() - lastForceSensorResponseMs) < 1500;
+  return lastForceSensorResponseMs >= 0 && (millis() - lastForceSensorResponseMs) < forceSensorDataTimeoutMs;
 }
 
 float getForceSensorValueKg() {
@@ -238,18 +269,15 @@ String getForceSensorSecondaryLabel() {
   return "Charge : " + nf(getForceSensorValueKg(), 1, 3) + " kg";
 }
 
-float parseFloatSafe(String s, float fallback) {
-  try {
-    return Float.parseFloat(s);
-  }
-  catch (Exception ex) {
-    return fallback;
-  }
+String getForceSensorReconnectLabel() {
+  return forceSensorPort == null
+    ? "Connect " + forceSensorComPort
+    : "Reconnect " + forceSensorComPort;
 }
 
 boolean handleForceSensorMousePressed(float mx, float my) {
   if (isPointInRect(mx, my, forceBtnCalX, forceBtnCalY, forceBtnCalW, forceBtnCalH)) {
-    requestForceSensorTare();
+    requestForceSensorCalibration();
     return true;
   }
 
@@ -294,7 +322,7 @@ void drawForceSensorCard(float x, float y, float w, float h) {
 
   fill(220);
   textSize(12);
-  text("Port detecte : " + (forceSensorResolvedPort.equals("") ? "--" : forceSensorResolvedPort), rightX, y + 14);
+  text("Port : " + (forceSensorResolvedPort.equals("") ? "--" : forceSensorResolvedPort), rightX, y + 14);
   text("Statut : " + forceSensorStatus, rightX, y + 32);
 
   if (lastForceSensorResponseMs >= 0) {
@@ -307,6 +335,7 @@ void drawForceSensorCard(float x, float y, float w, float h) {
   float btnH = 28;
   float btnW = 120;
   float gap = 12;
+  boolean canCalibrate = forceSensorPort != null && !forceSensorCalibrationPending;
 
   forceBtnCalX = rightX;
   forceBtnCalY = btnY;
@@ -318,8 +347,8 @@ void drawForceSensorCard(float x, float y, float w, float h) {
   forceBtnReconnectW = 140;
   forceBtnReconnectH = btnH;
 
-  drawForceActionButton(forceBtnCalX, forceBtnCalY, forceBtnCalW, forceBtnCalH, "Calibrer zero", true);
-  drawForceActionButton(forceBtnReconnectX, forceBtnReconnectY, forceBtnReconnectW, forceBtnReconnectH, "Relancer COM4", true);
+  drawForceActionButton(forceBtnCalX, forceBtnCalY, forceBtnCalW, forceBtnCalH, "Tare", canCalibrate);
+  drawForceActionButton(forceBtnReconnectX, forceBtnReconnectY, forceBtnReconnectW, forceBtnReconnectH, getForceSensorReconnectLabel(), true);
 
   textAlign(LEFT, CENTER);
 }

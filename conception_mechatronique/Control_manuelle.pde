@@ -10,7 +10,7 @@ void draw_menus_3() {
 
   fill(160);
   textSize(12);
-  text("Affichage de la force du capteur sur COM4 + boutons de tare et reconnexion série.", marginX, marginY - 16);
+  text("Capteur de force sur " + forceSensorComPort + " avec tare et reconnexion serie.", marginX, marginY - 16);
 
   for (int i = 0; i < 6; i++) {
     int col = i / 3;
