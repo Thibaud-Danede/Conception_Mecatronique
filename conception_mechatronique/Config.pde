@@ -8,6 +8,7 @@ String bridgeTargetIp = "http://192.168.1.227:18333";
 int bridgeLaunchPollMs = 200;
 float bridgeMotionSpeed = 12.0;
 boolean bridgeAutoStartEnabled = true;
+boolean bridgeDiagnosticLogEnabled = false;
 String bridgeExecutableRelativePath = "RobotPoseBridge/bin/Debug/RobotPoseBridge.exe";
 String bridgeCommandFileName = "robot_command.csv";
 

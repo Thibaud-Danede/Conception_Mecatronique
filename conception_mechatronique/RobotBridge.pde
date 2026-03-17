@@ -30,6 +30,7 @@ int lastRobotUpdateMs = -1;
 Process robotBridgeProcess = null;
 String bridgeLaunchStatus = "not started";
 String bridgeExePath = "";
+String bridgeLogPath = "";
 String bridgeCommandStatus = "idle";
 int bridgeCommandSequence = 0;
 boolean bridgeReconnectInProgress = false;
@@ -38,6 +39,7 @@ int bridgeReconnectStartMs = -1;
 void setupRobotBridge() {
   robotPosePath = sketchPath("robot_pose.csv");
   robotCommandPath = sketchPath(bridgeCommandFileName);
+  bridgeLogPath = bridgeDiagnosticLogEnabled ? sketchPath("bridge_launch.log") : "";
   resetRobotPoseFile();
   resetRobotCommandFile();
   clearBridgeRuntimeState();
@@ -66,11 +68,17 @@ void startRobotBridgeProcess() {
   File bridgeExe = new File(bridgeExePath);
   if (!bridgeExe.exists()) {
     bridgeLaunchStatus = "bridge exe missing";
+    appendBridgeLogLine("bridge exe missing: " + bridgeExePath);
     bridgeReconnectInProgress = false;
     return;
   }
 
   try {
+    File bridgeWorkingDirectory = bridgeExe.getParentFile();
+    if (bridgeWorkingDirectory == null || !bridgeWorkingDirectory.exists()) {
+      bridgeWorkingDirectory = new File(sketchPath(""));
+    }
+
     String[] command = {
       bridgeExePath,
       "--ip", bridgeTargetIp,
@@ -79,14 +87,45 @@ void startRobotBridgeProcess() {
       "--poll-ms", str(bridgeLaunchPollMs),
       "--motion-speed", str(bridgeMotionSpeed)
     };
+
+    appendBridgeLogLine("starting bridge");
+    appendBridgeLogLine("exe: " + bridgeExePath);
+    appendBridgeLogLine("workdir: " + bridgeWorkingDirectory.getAbsolutePath());
+    appendBridgeLogLine("target: " + bridgeTargetIp);
+    appendBridgeLogLine("pose file: " + robotPosePath);
+    appendBridgeLogLine("command file: " + robotCommandPath);
+
     ProcessBuilder builder = new ProcessBuilder(command);
+    builder.directory(bridgeWorkingDirectory);
     builder.redirectErrorStream(true);
+    if (bridgeLogPath.length() > 0) {
+      builder.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(bridgeLogPath)));
+    }
+    String currentPath = builder.environment().get("PATH");
+    String binPath = bridgeWorkingDirectory.getAbsolutePath();
+    if (currentPath == null || currentPath.length() == 0) {
+      builder.environment().put("PATH", binPath);
+    } else {
+      builder.environment().put("PATH", binPath + File.pathSeparator + currentPath);
+    }
+
     robotBridgeProcess = builder.start();
+    delay(120);
+    if (!robotBridgeProcess.isAlive()) {
+      int exitCode = robotBridgeProcess.exitValue();
+      bridgeLaunchStatus = "bridge exited (" + exitCode + ")";
+      appendBridgeLogLine("bridge exited quickly with code " + exitCode);
+      bridgeReconnectInProgress = false;
+      return;
+    }
+
     bridgeLaunchStatus = bridgeReconnectInProgress
       ? "bridge reconnect started"
       : "bridge started for " + bridgeTargetIp;
+    appendBridgeLogLine("bridge started");
   } catch (Exception ex) {
     bridgeLaunchStatus = "bridge start failed: " + ex.getMessage();
+    appendBridgeLogLine("bridge start failed: " + ex.getClass().getSimpleName() + ": " + ex.getMessage());
     bridgeReconnectInProgress = false;
   }
 }
@@ -557,4 +596,31 @@ String getBridgeRuntimeStatus() {
   }
 
   return "stopped";
+}
+
+void appendBridgeLogLine(String message) {
+  if (bridgeLogPath.length() == 0) {
+    return;
+  }
+
+  String[] line = { buildRobotBridgeTimestamp() + " | " + message };
+  try {
+    saveStrings(bridgeLogPath, concat(loadStringsSafe(bridgeLogPath), line));
+  } catch (Exception ex) {
+    // Ignore logging errors to avoid blocking bridge startup.
+  }
+}
+
+String[] loadStringsSafe(String path) {
+  File file = new File(path);
+  if (!file.exists()) {
+    return new String[0];
+  }
+
+  String[] lines = loadStrings(path);
+  if (lines == null) {
+    return new String[0];
+  }
+
+  return lines;
 }
