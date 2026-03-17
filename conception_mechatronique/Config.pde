@@ -12,6 +12,11 @@ boolean bridgeDiagnosticLogEnabled = false;
 String bridgeExecutableRelativePath = "RobotPoseBridge/bin/Debug/RobotPoseBridge.exe";
 String bridgeCommandFileName = "robot_command.csv";
 
+// ===== Calibration visu 3D (reel -> modele) =====
+// Ces coefficients sont appliques uniquement quand la pose live robot est disponible.
+float[] robot3d_joint_sign = {1, -1, -1, 1, -1, 1};
+float[] robot3d_joint_offset_deg = {0, 0, 0, 0, 0, 0};
+
 // ===== Capteur HX711 / ESP32 =====
 String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;

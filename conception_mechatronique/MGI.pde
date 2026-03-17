@@ -16,37 +16,68 @@ void setupMgiUi() {
 
 void draw_menus_2() {
   float marginX = width * 0.05;
-  float topY = height * 0.15;
+  float topY = getMgiTopY();
   float panelWidth = (width - (3 * marginX)) / 2;
-  float rowSpacing = height * 0.12;
+  float rowSpacing = getMgiRowSpacing();
+  float subtitleY = topY - 24;
+  float controlsStartY = getMgiControlsStartY();
 
   fill(255);
-  textSize(constrain(width / 40, 18, 28));
+  textSize(constrain(width / 40.0, 17, 27));
   text("MGI - cartesian target", marginX, topY - 45);
 
   fill(150);
-  textSize(12);
-  text(buildMgiInstructionText(), marginX, topY - 20);
+  textSize(constrain(width / 105.0, 10, 13));
+  textAlign(LEFT, TOP);
+  text(buildMgiInstructionText(), marginX, subtitleY, width - (2 * marginX), 36);
+  textAlign(LEFT, CENTER);
 
   for (int i = 0; i < 6; i++) {
     int col = i / 3;
     int row = i % 3;
     float x = marginX + (col * (panelWidth + marginX));
-    float y = topY + (row * rowSpacing);
+    float y = controlsStartY + (row * rowSpacing);
     drawMgiFieldRow(i, x, y, panelWidth);
   }
 
   drawMgiActionButtons();
 
-  float lowerPanelY = height * 0.62;
-  float lowerPanelH = 160;
+  float buttonY = getMgiButtonsY();
+  float buttonHeight = 38;
+  float lowerPanelY = buttonY + buttonHeight + 18;
+  float lowerPanelBottom = height - 48;
+  float lowerPanelH = lowerPanelBottom - lowerPanelY;
+  lowerPanelH = min(280, lowerPanelH);
+  if (lowerPanelH < 110) {
+    lowerPanelH = 110;
+    lowerPanelY = lowerPanelBottom - lowerPanelH;
+  }
   float lowerPanelW = width - (2 * marginX);
   float lowerGap = 14;
-  float solutionW = lowerPanelW * 0.58;
-  float vizW = lowerPanelW - solutionW - lowerGap;
+  boolean useStackedLayout = lowerPanelW < 880;
 
-  drawMgiSolutionPanel(marginX, lowerPanelY, solutionW, lowerPanelH);
-  drawRobot3DPanel(marginX + solutionW + lowerGap, lowerPanelY, vizW, lowerPanelH, "3D robot preview (IK)");
+  if (useStackedLayout) {
+    float solutionH = lowerPanelH * 0.50;
+    float vizH = lowerPanelH - solutionH - lowerGap;
+    if (vizH < 110) {
+      vizH = 110;
+      solutionH = lowerPanelH - vizH - lowerGap;
+    }
+    solutionH = max(95, solutionH);
+    drawMgiSolutionPanel(marginX, lowerPanelY, lowerPanelW, solutionH);
+    float vizW = constrain(lowerPanelW * 0.78, 320, 760);
+    float vizX = marginX + (lowerPanelW - vizW) * 0.5;
+    drawRobot3DPanel(vizX, lowerPanelY + solutionH + lowerGap, vizW, vizH, "3D robot preview (IK)");
+  } else {
+    float vizW = constrain(lowerPanelW * 0.34, 300, 430);
+    float solutionW = lowerPanelW - vizW - lowerGap;
+    if (solutionW < 320) {
+      solutionW = 320;
+      vizW = lowerPanelW - solutionW - lowerGap;
+    }
+    drawMgiSolutionPanel(marginX, lowerPanelY, solutionW, lowerPanelH);
+    drawRobot3DPanel(marginX + solutionW + lowerGap, lowerPanelY, vizW, lowerPanelH, "3D robot preview (IK)");
+  }
 }
 
 String buildMgiInstructionText() {
@@ -118,7 +149,7 @@ void drawMgiStepperButton(float x, float y, float w, float h, String label) {
 }
 
 void drawMgiActionButtons() {
-  float buttonY = height * 0.54;
+  float buttonY = getMgiButtonsY();
   float buttonHeight = 38;
   float gap = 16;
   float useLiveWidth = 150;
@@ -163,31 +194,43 @@ void drawMgiSolutionPanel(float x, float y, float w, float h) {
   fill(32, 36, 44, 220);
   rect(x, y, w, h, 12);
 
+  float titleY = y + 16;
+  float line1Y = y + 36;
+  float line2Y = y + 58;
+  float line3Y = y + 76;
+  float line4Y = y + 94;
+  float line5Y = y + 112;
+  float jointsY = y + h - 12;
+  float maxLineW = max(80, w - 32);
+
   fill(255);
-  textSize(14);
-  text("Inverse kinematics status", x + 16, y + 20);
+  textSize(constrain(width / 85.0, 11, 14));
+  text("Inverse kinematics status", x + 16, titleY);
 
   boolean currentValidated = isCurrentMgiTargetValidated();
   fill(currentValidated ? color(0, 255, 150) : color(255, 180, 80));
-  textSize(12);
-  text(currentValidated ? "Current target validated and ready to send." : buildCurrentMgiStatus(), x + 16, y + 44);
+  textSize(constrain(width / 105.0, 10, 12));
+  text(ellipsizeToWidth(currentValidated ? "Current target validated and ready to send." : buildCurrentMgiStatus(), maxLineW), x + 16, line1Y);
 
   fill(200);
-  text("Validation: " + bridgeValidationStatus, x + 16, y + 66);
-  text("Mode: " + liveRobotModeStatus, x + 16, y + 86);
-  text("Safety: " + liveSafetyStatus, x + 16, y + 106);
-  text("CMD: " + bridgeCommandStatus, x + 16, y + 126);
+  if (line2Y < y + h - 12) text(ellipsizeToWidth("Validation: " + bridgeValidationStatus, maxLineW), x + 16, line2Y);
+  if (line3Y < y + h - 12) text(ellipsizeToWidth("Mode: " + liveRobotModeStatus, maxLineW), x + 16, line3Y);
+  if (line4Y < y + h - 12) text(ellipsizeToWidth("Safety: " + liveSafetyStatus, maxLineW), x + 16, line4Y);
+  if (line5Y < y + h - 12) text(ellipsizeToWidth("CMD: " + bridgeCommandStatus, maxLineW), x + 16, line5Y);
 
-  if (bridgeValidationPassed) {
+  if (bridgeValidationPassed && jointsY > y + 120) {
     text(
-      "J1 " + formatMgiValue(bridgeValidationJoints[0]) +
-      " | J2 " + formatMgiValue(bridgeValidationJoints[1]) +
-      " | J3 " + formatMgiValue(bridgeValidationJoints[2]) +
-      " | J4 " + formatMgiValue(bridgeValidationJoints[3]) +
-      " | J5 " + formatMgiValue(bridgeValidationJoints[4]) +
-      " | J6 " + formatMgiValue(bridgeValidationJoints[5]),
+      ellipsizeToWidth(
+        "J1 " + formatMgiValue(bridgeValidationJoints[0]) +
+        " | J2 " + formatMgiValue(bridgeValidationJoints[1]) +
+        " | J3 " + formatMgiValue(bridgeValidationJoints[2]) +
+        " | J4 " + formatMgiValue(bridgeValidationJoints[3]) +
+        " | J5 " + formatMgiValue(bridgeValidationJoints[4]) +
+        " | J6 " + formatMgiValue(bridgeValidationJoints[5]),
+        maxLineW
+      ),
       x + 16,
-      y + 146
+      jointsY
     );
   }
 }
@@ -215,7 +258,7 @@ void handleMgiMousePressed(float px, float py) {
 }
 
 boolean handleMgiActionButtonClick(float px, float py) {
-  float buttonY = height * 0.54;
+  float buttonY = getMgiButtonsY();
   float buttonHeight = 38;
   float gap = 16;
   float useLiveWidth = 150;
@@ -490,10 +533,26 @@ float getMgiPanelWidth() {
 }
 
 float getMgiRowY(int index) {
-  float topY = height * 0.15;
-  float rowSpacing = height * 0.12;
+  float topY = getMgiControlsStartY();
+  float rowSpacing = getMgiRowSpacing();
   int row = index % 3;
   return topY + (row * rowSpacing);
+}
+
+float getMgiTopY() {
+  return height * 0.15;
+}
+
+float getMgiControlsStartY() {
+  return getMgiTopY() + 22;
+}
+
+float getMgiRowSpacing() {
+  return height * 0.12;
+}
+
+float getMgiButtonsY() {
+  return getMgiControlsStartY() + (3 * getMgiRowSpacing()) + 8;
 }
 
 float getMgiBaseX(int index) {

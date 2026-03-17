@@ -7,31 +7,37 @@ void draw_menus_1() {
   float marginY = height * 0.15;
   float panelWidth = (width - (3 * marginX)) / 2;
   float spacingV = height * 0.12;
+  float subtitleY = marginY - 22;
+  float controlsStartY = marginY + 22;
 
   if (hasLiveRobotPose && !mgdSliderDragActive) {
     arrayCopy(liveJoints, joints);
   }
 
   fill(255);
-  textSize(constrain(width/40, 18, 28));
+  textSize(constrain(width / 40.0, 17, 27));
   text("MGD - joint target", marginX, marginY - 45);
 
   fill(150);
-  textSize(12);
+  textSize(constrain(width / 105.0, 10, 13));
+  textAlign(LEFT, TOP);
   text(
     hasLiveRobotPose
       ? "Drag a slider, then release to send the joint target to the robot."
       : "Offline mode: sliders move locally only.",
     marginX,
-    marginY - 20
+    subtitleY,
+    width - (2 * marginX),
+    32
   );
+  textAlign(LEFT, CENTER);
 
   for (int i = 0; i < 6; i++) {
     int col = i / 3;
     int row = i % 3;
 
     float x = marginX + (col * (panelWidth + marginX));
-    float y = marginY + (row * spacingV);
+    float y = controlsStartY + (row * spacingV);
 
     joints[i] = drawJointControlSlider(
       i,
@@ -46,9 +52,13 @@ void draw_menus_1() {
   }
 
   float vizX = marginX;
-  float vizY = height * 0.53;
-  float vizW = width - (2 * marginX);
-  float vizH = height * 0.30;
+  float vizY = controlsStartY + (3 * spacingV) + 34;
+  float vizW = constrain(width * 0.78, 360, 820);
+  vizX = (width - vizW) * 0.5;
+  float vizBottom = height - 44;
+  vizY = min(vizY, vizBottom - 90);
+  float vizH = vizBottom - vizY;
+  vizH = constrain(vizH, 120, 340);
   drawRobot3DPanel(vizX, vizY, vizW, vizH, "3D robot preview (joint space)");
 
   handleMgdSliderRelease();
