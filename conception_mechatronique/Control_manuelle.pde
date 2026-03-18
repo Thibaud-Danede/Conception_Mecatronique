@@ -9,17 +9,22 @@ void draw_menus_3() {
   fill(255);
   textSize(constrain(width / 40.0, 17, 27));
   text("CONTROL MANUELLE", marginX, marginY - 42);
-
-  fill(160);
   textSize(constrain(width / 105.0, 10, 13));
   textAlign(LEFT, TOP);
+  if (hasLiveRobotPose) {
+    fill(0, 255, 100); // Vert : Capteur actif
+  } else {
+    fill(255, 80, 80);  // Rouge : Hors ligne
+  }
+
   text(
     "Capteur de force sur " + forceSensorComPort + " avec tare auto, reconnexion serie et auto-step Z optionnel.",
     marginX,
     subtitleY,
     width - (2 * marginX),
     34
-  );
+    );
+  fill(160);
   textAlign(LEFT, CENTER);
 
   for (int i = 0; i < 6; i++) {

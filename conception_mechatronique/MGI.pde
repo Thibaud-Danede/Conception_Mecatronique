@@ -25,11 +25,18 @@ void draw_menus_2() {
   fill(255);
   textSize(constrain(width / 40.0, 17, 27));
   text("MGI - cartesian target", marginX, topY - 45);
-
-  fill(150);
   textSize(constrain(width / 105.0, 10, 13));
   textAlign(LEFT, TOP);
-  text(buildMgiInstructionText(), marginX, subtitleY, width - (2 * marginX), 36);
+  if (hasLiveRobotPose) {
+    fill(0, 255, 100); 
+    text("Fill the cartesian target, click Validate, then Send only after a valid IK solution is reported.", marginX, subtitleY, width - (2 * marginX), 36);
+  }
+  if (hasRobotConnection) {
+    fill(0, 255, 100); 
+    text("Robot connected, but motion is blocked until real mode and safety are confirmed by the bridge.", marginX, subtitleY, width - (2 * marginX), 36); 
+  }
+  fill(255, 80, 80);
+  text("Reconnect the bridge or wait for a robot connection before validating or sending a target.", marginX, subtitleY, width - (2 * marginX), 36); 
   textAlign(LEFT, CENTER);
 
   for (int i = 0; i < 6; i++) {
@@ -78,18 +85,6 @@ void draw_menus_2() {
     drawMgiSolutionPanel(marginX, lowerPanelY, solutionW, lowerPanelH);
     drawRobot3DPanel(marginX + solutionW + lowerGap, lowerPanelY, vizW, lowerPanelH, "3D robot preview (IK)");
   }
-}
-
-String buildMgiInstructionText() {
-  if (hasLiveRobotPose) {
-    return "Fill the cartesian target, click Validate, then Send only after a valid IK solution is reported.";
-  }
-
-  if (hasRobotConnection) {
-    return "Robot connected, but motion is blocked until real mode and safety are confirmed by the bridge.";
-  }
-
-  return "Reconnect the bridge or wait for a robot connection before validating or sending a target.";
 }
 
 void drawMgiFieldRow(int index, float x, float y, float panelWidth) {
@@ -270,10 +265,8 @@ boolean handleMgiActionButtonClick(float px, float py) {
   if (isPointInRect(px, py, startX, buttonY, useLiveWidth, buttonHeight)) {
     if (hasLiveRobotPose) {
       syncMgiInputsFromTarget(liveCartesian);
-      fill(0, 255, 100); 
       mgiLocalStatus = "Live pose loaded. Validate before sending.";
     } else {
-      fill(255, 80, 80);
       mgiLocalStatus = "Live pose unavailable. Wait for a real robot pose or reconnect.";
     }
     clearMgiActiveField();
