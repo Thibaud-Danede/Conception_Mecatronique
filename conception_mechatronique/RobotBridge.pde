@@ -1,3 +1,33 @@
+// ============================================================================
+// Couche de communication entre le sketch Processing et RobotPoseBridge.exe.
+//
+// Architecture:
+// - Processing lance un bridge C# local (RobotPoseBridge.exe)
+// - Processing ecrit les ordres dans robot_command.csv
+// - Le bridge lit ces ordres, parle au SDK xArm, puis reecrit l'etat courant
+//   et les diagnostics dans robot_pose.csv
+// - Processing reparce ensuite robot_pose.csv pour alimenter toute l'IHM
+//
+// Chaines d'appel importantes:
+// - setupRobotBridge()
+//   -> resetRobotPoseFile()
+//   -> resetRobotCommandFile()
+//   -> clearBridgeRuntimeState()
+//   -> setupLocalRobotBridge()
+//   -> loadRobotPoseFromBridge()
+//
+// - draw() appelle updateRobotBridge()
+//   -> requestRobotPoseRefresh() si le CSV a change
+//   -> loadRobotPoseFromBridge() pour parser l'etat
+//
+// - sendRobotJointCommand()/sendRobotCartesian...()/sendRobotToolVelocity...
+//   -> sendRobotCommand()
+//   -> queueRobotCommandFileWrite()
+//   -> flushRobotCommandWrites()
+//   -> writeBridgeTextFileNow()
+// ============================================================================
+
+// Etat de telemetrie expose a l'IHM.
 boolean hasRobotConnection = false;
 boolean hasLiveRobotPose = false;
 String liveRobotIp = "unknown";
@@ -11,6 +41,7 @@ String liveDiagnosticSdk = "SDK check pending";
 String robotPosePath = "";
 String robotCommandPath = "";
 
+// Etat derive du bridge sur la partie "robot reel pret a bouger".
 boolean bridgeRealReady = false;
 boolean bridgeSafetyReady = false;
 boolean bridgeValidationPassed = false;
@@ -18,15 +49,18 @@ int bridgeReportedCommandSequence = 0;
 String bridgeReportedCommandMode = "none";
 String bridgeValidationStatus = "not validated";
 
+// Caches des positions live et de la derniere validation IK.
 float[] liveJoints = {0, 0, 0, 0, 0, 0};
 float[] liveCartesian = {0, 0, 0, 0, 0, 0};
 float[] bridgeValidationTarget = {0, 0, 0, 0, 0, 0};
 float[] bridgeValidationJoints = {0, 0, 0, 0, 0, 0};
 
+// Cadence de polling cote Processing.
 int robotPollIntervalMs = 200;
 int lastRobotPollMs = -1000;
 int lastRobotUpdateMs = -1;
 
+// Processus bridge local et etat de lancement.
 Process robotBridgeProcess = null;
 String bridgeLaunchStatus = "not started";
 String bridgeExePath = "";
@@ -35,6 +69,8 @@ String bridgeCommandStatus = "idle";
 int bridgeCommandSequence = 0;
 boolean bridgeReconnectInProgress = false;
 int bridgeReconnectStartMs = -1;
+
+// Petits verrous/caches pour limiter les collisions lecture/ecriture sur les fichiers CSV.
 Object robotPoseIoLock = new Object();
 Object robotCommandIoLock = new Object();
 volatile boolean robotPoseReadInProgress = false;
@@ -46,17 +82,22 @@ volatile String robotCommandIoStatus = "idle";
 volatile int robotCommandWriteGeneration = 0;
 volatile int robotCommandPendingGeneration = 0;
 
+// Point d'entree du sous-systeme de communication robot.
 void setupRobotBridge() {
   robotPosePath = sketchPath("robot_pose.csv");
   robotCommandPath = sketchPath(bridgeCommandFileName);
   bridgeLogPath = bridgeDiagnosticLogEnabled ? sketchPath("bridge_launch.log") : "";
+  // On recree d'abord des fichiers CSV coherents pour que le sketch et le
+  // bridge puissent demarrer meme s'il n'existe encore aucune telemetrie.
   resetRobotPoseFile();
   resetRobotCommandFile();
   clearBridgeRuntimeState();
   setupLocalRobotBridge();
+  // Lecture immediate d'un premier etat, utile si un bridge tourne deja.
   loadRobotPoseFromBridge();
 }
 
+// Prepare le chemin du bridge et l'enregistrement du hook de fermeture.
 void setupLocalRobotBridge() {
   bridgeExePath = sketchPath(bridgeExecutableRelativePath);
   robotPollIntervalMs = bridgeLaunchPollMs;
@@ -70,6 +111,7 @@ void setupLocalRobotBridge() {
   }
 }
 
+// Lance le bridge C# en processus local avec son dossier de travail et, si besoin, un log.
 void startRobotBridgeProcess() {
   if (robotBridgeProcess != null && robotBridgeProcess.isAlive()) {
     bridgeLaunchStatus = "bridge already running";
@@ -99,6 +141,7 @@ void startRobotBridgeProcess() {
       "--motion-speed", str(bridgeMotionSpeed)
     };
 
+    // Le bridge lit les commandes depuis un CSV et reecrit la telemetrie dans un autre.
     appendBridgeLogLine("starting bridge");
     appendBridgeLogLine("exe: " + bridgeExePath);
     appendBridgeLogLine("workdir: " + bridgeWorkingDirectory.getAbsolutePath());
@@ -114,6 +157,7 @@ void startRobotBridgeProcess() {
     }
     String currentPath = builder.environment().get("PATH");
     String binPath = bridgeWorkingDirectory.getAbsolutePath();
+    // Ajoute le dossier du bridge au PATH pour que xarm.dll soit trouvable.
     if (currentPath == null || currentPath.length() == 0) {
       builder.environment().put("PATH", binPath);
     } else {
@@ -121,6 +165,8 @@ void startRobotBridgeProcess() {
     }
 
     robotBridgeProcess = builder.start();
+    // Petite pause defensive: si le process meurt instantanement, on remonte
+    // tout de suite un statut utile plutot qu'un "running" trompeur.
     delay(120);
     if (!robotBridgeProcess.isAlive()) {
       int exitCode = robotBridgeProcess.exitValue();
@@ -141,12 +187,14 @@ void startRobotBridgeProcess() {
   }
 }
 
+// Hook appele a la fermeture du sketch Processing.
 public void dispose() {
   closeForceSensorPort();
   stopRobotBridgeProcess();
   cleanupStaleRobotBridgeProcessesIfNeeded();
 }
 
+// Arrete le bridge local en essayant d'abord un shutdown propre.
 void stopRobotBridgeProcess() {
   if (robotBridgeProcess != null) {
     try {
@@ -169,11 +217,14 @@ void stopRobotBridgeProcess() {
   }
 }
 
+// Reinitialise l'etat local puis relance le bridge.
 void requestRobotBridgeReconnect() {
   if (bridgeReconnectInProgress) {
     return;
   }
 
+  // La reconnexion repart completement a zero:
+  // process bridge stoppe -> fichiers CSV reinitialises -> caches invalides -> relance.
   bridgeReconnectInProgress = true;
   bridgeReconnectStartMs = millis();
   bridgeLaunchStatus = "reconnecting...";
@@ -185,7 +236,10 @@ void requestRobotBridgeReconnect() {
   startRobotBridgeProcess();
 }
 
+// Repart d'un fichier commande neutre pour que le bridge lise un etat coherent.
 void resetRobotCommandFile() {
+  // On republie une commande "none" de sequence 0 pour que le bridge lise
+  // un etat neutre coherent meme juste apres un restart.
   bridgeCommandStatus = "idle";
   bridgeCommandSequence = 0;
   bridgeReportedCommandMode = "none";
@@ -206,7 +260,10 @@ void resetRobotCommandFile() {
   }
 }
 
+// Repart d'un fichier telemetrie vide mais syntaxiquement valide.
 void resetRobotPoseFile() {
+  // Meme si aucun bridge n'a encore tourne, on veut un CSV syntaxiquement valide
+  // pour que l'IHM puisse afficher un etat initial lisible.
   hasRobotConnection = false;
   hasLiveRobotPose = false;
   liveRobotStatus = "waiting for bridge";
@@ -247,6 +304,7 @@ void resetRobotPoseFile() {
   }
 }
 
+// Oublie les validations et flags derives du bridge precedent.
 void clearBridgeRuntimeState() {
   bridgeRealReady = false;
   bridgeSafetyReady = false;
@@ -256,8 +314,10 @@ void clearBridgeRuntimeState() {
   zeroFloatArray(bridgeValidationJoints);
 }
 
+// Polling principal du bridge cote Processing.
 void updateRobotBridge() {
   if (millis() - lastRobotPollMs < robotPollIntervalMs) {
+    // Meme sans nouveau poll CSV, on continue a surveiller l'etat de reconnect.
     updateReconnectState();
     return;
   }
@@ -267,6 +327,7 @@ void updateRobotBridge() {
   updateReconnectState();
 }
 
+// Gere les timeouts de reconnexion vus par l'IHM.
 void updateReconnectState() {
   if (!bridgeReconnectInProgress) {
     return;
@@ -286,6 +347,7 @@ void updateReconnectState() {
   }
 }
 
+// Lit le CSV de telemetrie produit par le bridge et le convertit en etat UI.
 void loadRobotPoseFromBridge() {
   File poseFile = new File(robotPosePath);
   if (!poseFile.exists()) {
@@ -307,6 +369,8 @@ void loadRobotPoseFromBridge() {
     return;
   }
 
+  // Variables temporaires pour ne basculer l'etat global qu'une fois le parse termine.
+  // Cela evite de melanger un ancien etat avec un nouveau parse partiel.
   boolean parsedConnected = false;
   boolean parsedRealReady = false;
   boolean parsedSafetyReady = false;
@@ -340,6 +404,8 @@ void loadRobotPoseFromBridge() {
     }
 
     String key = trim(parts[0]);
+    // Le contrat ici est simple: chaque cle du CSV bridge ecrase une partie
+    // precise de l'etat local Processing.
     if (key.equals("connected")) {
       parsedConnected = trim(parts[1]).equals("1");
     } else if (key.equals("real_ready")) {
@@ -404,6 +470,8 @@ void loadRobotPoseFromBridge() {
   hasLiveRobotPose = parsedConnected && parsedRealReady;
 
   if (hasLiveRobotPose) {
+    // Les valeurs live ne sont publiees globalement que si le bridge confirme
+    // a la fois la connexion et le mode "real ready".
     arrayCopy(parsedJoints, liveJoints);
     arrayCopy(parsedCartesian, liveCartesian);
     lastRobotUpdateMs = millis();
@@ -419,6 +487,7 @@ void loadRobotPoseFromBridge() {
   }
 }
 
+// Remplit un tableau float depuis une ligne CSV "key,v1,v2,...".
 void fillFloatArray(float[] target, String[] parts, int offset) {
   for (int i = 0; i < target.length; i++) {
     int sourceIndex = i + offset;
@@ -428,12 +497,14 @@ void fillFloatArray(float[] target, String[] parts, int offset) {
   }
 }
 
+// Helper de remise a zero.
 void zeroFloatArray(float[] values) {
   for (int i = 0; i < values.length; i++) {
     values[i] = 0;
   }
 }
 
+// Parse tolerant qui accepte la virgule comme separateur decimal.
 float parseFloatSafe(String rawValue, float fallbackValue) {
   String normalized = trim(rawValue);
   normalized = normalized.replace(',', '.');
@@ -445,6 +516,7 @@ float parseFloatSafe(String rawValue, float fallbackValue) {
   return parsedValue;
 }
 
+// Commande articulaire brute pour le mode MGD.
 void sendRobotJointCommand(float[] targetJoints) {
   if (!canQueueMotionCommand()) {
     bridgeCommandStatus = "joint command blocked: " + getMotionBlockReason();
@@ -454,6 +526,7 @@ void sendRobotJointCommand(float[] targetJoints) {
   sendRobotCommand("joints", targetJoints);
 }
 
+// Demande de retour Home.
 boolean sendRobotHomeCommand() {
   if (!canQueueMotionCommand()) {
     bridgeCommandStatus = "home command blocked: " + getMotionBlockReason();
@@ -465,6 +538,7 @@ boolean sendRobotHomeCommand() {
   return true;
 }
 
+// Deplacement relatif outil, utile pour les interactions fines.
 boolean sendRobotToolDeltaCommand(float[] deltaToolPose) {
   if (!canQueueMotionCommand()) {
     bridgeCommandStatus = "tool delta blocked: " + getMotionBlockReason();
@@ -475,6 +549,7 @@ boolean sendRobotToolDeltaCommand(float[] deltaToolPose) {
   return true;
 }
 
+// Vitesse outil continue, utilisee notamment par le module force.
 boolean sendRobotToolVelocityCommand(float[] toolVelocity) {
   if (!canQueueMotionCommand()) {
     bridgeCommandStatus = "tool velocity blocked: " + getMotionBlockReason();
@@ -485,6 +560,7 @@ boolean sendRobotToolVelocityCommand(float[] toolVelocity) {
   return true;
 }
 
+// Arret immediat cote bridge.
 boolean sendRobotStopCommand() {
   if (!canQueueBridgeRequest()) {
     bridgeCommandStatus = "stop blocked: bridge unavailable";
@@ -496,6 +572,7 @@ boolean sendRobotStopCommand() {
   return true;
 }
 
+// Demande de validation IK sans execution de mouvement.
 void sendRobotCartesianValidationCommand(float[] targetCartesian) {
   if (!canQueueBridgeRequest()) {
     bridgeCommandStatus = "validation blocked: bridge unavailable";
@@ -508,6 +585,7 @@ void sendRobotCartesianValidationCommand(float[] targetCartesian) {
   arrayCopy(targetCartesian, bridgeValidationTarget);
 }
 
+// Execution d'une cible cartesienne deja validee.
 boolean sendRobotCartesianExecuteCommand(float[] targetCartesian) {
   if (!canQueueBridgeRequest()) {
     bridgeCommandStatus = "execute blocked: bridge unavailable";
@@ -523,11 +601,17 @@ boolean sendRobotCartesianExecuteCommand(float[] targetCartesian) {
   return true;
 }
 
+// Ecrit une commande structurante dans le CSV lu par le bridge C#.
 void sendRobotCommand(String mode, float[] values) {
   if (values == null || values.length < 6) {
     return;
   }
 
+  // Le CSV commande est volontairement tres simple:
+  // - sequence pour detecter les nouvelles requetes
+  // - timestamp pour le debug
+  // - mode pour choisir l'action cote bridge
+  // - values pour les 6 floats de charge utile
   bridgeCommandSequence++;
   String[] lines = {
     "sequence," + bridgeCommandSequence,
@@ -536,19 +620,31 @@ void sendRobotCommand(String mode, float[] values) {
     "values," + join(formatFloatArray(values), ",")
   };
   queueRobotCommandFileWrite(lines);
+  // L'IHM anticipe le mode/numero envoye, puis attend que le bridge les
+  // confirme plus tard dans robot_pose.csv.
   bridgeReportedCommandMode = mode;
   bridgeReportedCommandSequence = bridgeCommandSequence;
   bridgeCommandStatus = mode + " #" + bridgeCommandSequence + " queued";
 }
 
+// Le bridge doit etre en vie avant toute requete.
 boolean canQueueBridgeRequest() {
+  // Requete "bridge" = validation, stop ou mouvement, sans prejuger de la
+  // disponibilite du vrai robot derriere.
   return !bridgeReconnectInProgress && robotBridgeProcess != null && robotBridgeProcess.isAlive();
 }
 
+// Un vrai mouvement demande en plus une telemetrie live exploitable.
 boolean canQueueMotionCommand() {
+  // Pour bouger reellement, on exige:
+  // - bridge vivant
+  // - robot connecte
+  // - mode reel confirme
+  // - securite bridge ok
   return canQueueBridgeRequest() && hasRobotConnection && bridgeRealReady && bridgeSafetyReady;
 }
 
+// Raison lisible pour l'operateur quand un mouvement est refuse.
 String getMotionBlockReason() {
   if (!canQueueBridgeRequest()) {
     return "bridge unavailable";
@@ -569,6 +665,7 @@ String getMotionBlockReason() {
   return "robot unavailable";
 }
 
+// Formatage CSV des tableaux de valeurs envoyes au bridge.
 String[] formatFloatArray(float[] values) {
   String[] formatted = new String[values.length];
   for (int i = 0; i < values.length; i++) {
@@ -577,14 +674,18 @@ String[] formatFloatArray(float[] values) {
   return formatted;
 }
 
+// Format horodatage simple reutilise dans les CSV et logs.
 String buildRobotBridgeTimestamp() {
   return year() + "-" + nf(month(), 2) + "-" + nf(day(), 2) + "T" + nf(hour(), 2) + ":" + nf(minute(), 2) + ":" + nf(second(), 2);
 }
 
+// Grande synthese d'etat visible dans le footer du sketch.
 String buildFooterStatus() {
   String bridgeStatus = getBridgeRuntimeStatus();
   String connectionLabel = hasRobotConnection ? "xArm CONNECTED" : "xArm DISCONNECTED";
   if (hasLiveRobotPose) {
+    // Quand une pose live existe, on privilegie un resume "operateur" axe sur
+    // la position et le dernier ordre plutot que sur les diagnostics bruts.
     int ageMs = max(0, millis() - lastRobotUpdateMs);
     return connectionLabel + " | " + liveRobotModeStatus + " | " + liveSafetyStatus + " | X: " + nf(liveCartesian[0], 1, 1) + " | Y: " + nf(liveCartesian[1], 1, 1) + " | Z: " + nf(liveCartesian[2], 1, 1) + " | " + bridgeCommandStatus + " | bridge: " + bridgeStatus + " | age: " + ageMs + " ms";
   }
@@ -592,6 +693,7 @@ String buildFooterStatus() {
   return connectionLabel + " | " + liveRobotStatus + " | diag: " + liveDiagnosticStatus + " | net: " + liveDiagnosticNetwork + " | sdk: " + liveDiagnosticSdk + " | bridge: " + bridgeStatus;
 }
 
+// Carte de telemetrie live affichee en bas a droite.
 void drawLiveTelemetryCard() {
   float cardWidth = 340;
   float cardHeight = 172;
@@ -629,6 +731,7 @@ void drawLiveTelemetryCard() {
   textAlign(LEFT, CENTER);
 }
 
+// Etat runtime simplifie du processus bridge.
 String getBridgeRuntimeStatus() {
   if (bridgeReconnectInProgress) {
     return "reconnecting";
@@ -645,6 +748,7 @@ String getBridgeRuntimeStatus() {
   return "stopped";
 }
 
+// Log optionnel du cycle de vie du bridge; ne doit jamais casser l'application.
 void appendBridgeLogLine(String message) {
   if (bridgeLogPath.length() == 0) {
     return;
@@ -669,6 +773,7 @@ void appendBridgeLogLine(String message) {
   }
 }
 
+// Lecture defensive d'un fichier texte du bridge.
 String[] loadStringsSafe(String path) {
   File file = new File(path);
   if (!file.exists()) {
@@ -683,6 +788,7 @@ String[] loadStringsSafe(String path) {
   return lines;
 }
 
+// Nettoie les vieux RobotPoseBridge.exe qui pourraient bloquer le redemarrage.
 void cleanupStaleRobotBridgeProcessesIfNeeded() {
   if (!bridgeKillStaleProcessesOnStart) {
     return;
@@ -706,6 +812,7 @@ void cleanupStaleRobotBridgeProcessesIfNeeded() {
   }
 }
 
+// Attente courte utilitaire pour laisser un process terminer.
 void waitForProcessExit(Process process, int timeoutMs) {
   if (process == null) {
     return;
@@ -721,6 +828,7 @@ void waitForProcessExit(Process process, int timeoutMs) {
   }
 }
 
+// Declenche une lecture asynchrone si le CSV de pose a change.
 void requestRobotPoseRefresh(File poseFile) {
   if (poseFile == null || !poseFile.exists()) {
     return;
@@ -742,6 +850,7 @@ void requestRobotPoseRefresh(File poseFile) {
   final long modifiedSnapshot = modifiedMs;
   Thread reader = new Thread(new Runnable() {
     public void run() {
+      // Lecture dans un thread separe pour ne pas bloquer draw() sur le disque.
       String[] lines = readBridgeTextFile(posePathSnapshot);
       synchronized (robotPoseIoLock) {
         if (lines != null && lines.length > 0) {
@@ -756,12 +865,15 @@ void requestRobotPoseRefresh(File poseFile) {
   reader.start();
 }
 
+// File d'ecriture "last write wins" pour les commandes robot.
 void queueRobotCommandFileWrite(String[] lines) {
   if (robotCommandPath.length() == 0 || lines == null) {
     return;
   }
 
   synchronized (robotCommandIoLock) {
+    // On garde seulement la derniere commande en attente: si plusieurs requetes
+    // arrivent vite, la plus recente ecrase les anciennes non encore ecrites.
     robotCommandPendingLines = lines.clone();
     robotCommandPendingGeneration = robotCommandWriteGeneration;
     if (robotCommandWriteInProgress) {
@@ -780,6 +892,7 @@ void queueRobotCommandFileWrite(String[] lines) {
   writer.start();
 }
 
+// Vide la file des commandes en ecrivant toujours la plus recente.
 void flushRobotCommandWrites(String targetPath) {
   while (true) {
     String[] linesToWrite = null;
@@ -798,6 +911,8 @@ void flushRobotCommandWrites(String targetPath) {
     }
 
     if (writeGeneration != robotCommandWriteGeneration) {
+      // Une reinitialisation de fichier a eu lieu entre temps; on ignore donc
+      // cette ancienne ecriture devenue obsolescente.
       continue;
     }
 
@@ -807,6 +922,7 @@ void flushRobotCommandWrites(String targetPath) {
   }
 }
 
+// Ecriture atomique d'un fichier texte via un .tmp puis move.
 boolean writeBridgeTextFileNow(String targetPath, String[] lines) {
   if (targetPath == null || targetPath.length() == 0 || lines == null) {
     return false;
@@ -827,6 +943,8 @@ boolean writeBridgeTextFileNow(String targetPath, String[] lines) {
     java.nio.file.Files.write(tempPath, fileLines, java.nio.charset.StandardCharsets.UTF_8);
 
     try {
+      // On prefere un move atomique pour eviter qu'un lecteur voie un fichier
+      // partiellement ecrit; fallback non atomique si le FS ne le permet pas.
       java.nio.file.Files.move(
         tempPath,
         target,
@@ -846,6 +964,7 @@ boolean writeBridgeTextFileNow(String targetPath, String[] lines) {
   }
 }
 
+// Lecture robuste avec quelques tentatives pour limiter les collisions de fichiers.
 String[] readBridgeTextFile(String targetPath) {
   if (targetPath == null || targetPath.length() == 0) {
     return null;
@@ -859,6 +978,8 @@ String[] readBridgeTextFile(String targetPath) {
       );
       return lines.toArray(new String[lines.size()]);
     } catch (Exception ex) {
+      // Quelques retries courts suffisent souvent quand le bridge est justement
+      // en train d'ecrire le meme fichier au meme instant.
       if (attempt >= 2) {
         return null;
       }

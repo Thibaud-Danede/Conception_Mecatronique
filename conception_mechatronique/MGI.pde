@@ -1,3 +1,24 @@
+// ============================================================================
+// Onglet MGI (Modele Geometrique Inverse).
+// Cet ecran travaille en espace cartesien:
+// - l'utilisateur edite X/Y/Z/Rx/Ry/Rz
+// - une demande de validation IK est envoyee au bridge
+// - le bridge repond plus tard via robot_pose.csv avec validation_* et joints
+// - l'execution n'est autorisee que si la cible courante correspond exactement
+//   a la derniere cible validee
+//
+// Chaine d'appel typique:
+// clic "Validate"
+// -> handleMgiActionButtonClick()
+// -> commitAllMgiFields()
+// -> sendRobotCartesianValidationCommand()
+// -> RobotBridge.pde ecrit robot_command.csv
+// -> RobotPoseBridge.exe calcule la validation
+// -> loadRobotPoseFromBridge() recharge validation_status/validation_joints
+// -> isCurrentMgiTargetValidated() autorise ensuite "Hold Send"
+// ============================================================================
+
+// Cible cartesienne courante et etat d'edition des champs MGI.
 float[] cartesian = {300, 0, 200, 180, 0, 0};
 String[] cartNames = {"X", "Y", "Z", "Rx", "Ry", "Rz"};
 String[] cartUnits = {"mm", "mm", "mm", "deg", "deg", "deg"};
@@ -8,12 +29,14 @@ boolean mgiInitialPoseCaptured = false;
 boolean mgiSendHoldActive = false;
 String mgiLocalStatus = "Edit a target or load the live pose, then validate.";
 
+// Reinitialise l'etat local des champs MGI au demarrage du sketch.
 void setupMgiUi() {
   syncMgiInputsFromTarget(cartesian);
   mgiInitialPoseCaptured = false;
   mgiLocalStatus = "Edit a target or load the live pose, then validate.";
 }
 
+// Onglet MGI: saisie de pose cartesienne, validation IK et execution.
 void draw_menus_2() {
   float marginX = width * 0.05;
   float topY = getMgiTopY();
@@ -44,9 +67,13 @@ void draw_menus_2() {
     int row = i % 3;
     float x = marginX + (col * (panelWidth + marginX));
     float y = controlsStartY + (row * rowSpacing);
+    // Chaque ligne affiche:
+    // label + champ texte + steppers + unite + eventuelle valeur live.
     drawMgiFieldRow(i, x, y, panelWidth);
   }
 
+  // Les boutons d'action reutilisent l'etat mis a jour par RobotBridge.pde
+  // (validation, mode robot, statut de securite, etc.).
   drawMgiActionButtons();
 
   float buttonY = getMgiButtonsY();
@@ -129,6 +156,7 @@ void drawMgiFieldRow(int index, float x, float y, float panelWidth) {
   textAlign(LEFT, CENTER);
 }
 
+// Petit bouton + ou - place a droite d'un champ.
 void drawMgiStepperButton(float x, float y, float w, float h, String label) {
   boolean isHover = isPointInRect(mouseX, mouseY, x, y, w, h);
   stroke(isHover ? color(0, 120, 255) : color(90));
@@ -143,6 +171,7 @@ void drawMgiStepperButton(float x, float y, float w, float h, String label) {
   textAlign(LEFT, CENTER);
 }
 
+// Rangee de boutons d'action MGI.
 void drawMgiActionButtons() {
   float buttonY = getMgiButtonsY();
   float buttonHeight = 38;
@@ -157,11 +186,15 @@ void drawMgiActionButtons() {
   textSize(12);
   text(buildCurrentMgiStatus(), startX, buttonY - 18);
 
+  // Les boutons ne sont activables que si le bridge est capable de recevoir
+  // une requete. L'execution demande en plus une validation encore "fraiche"
+  // de la cible courante.
   drawMgiActionButton(startX, buttonY, useLiveWidth, buttonHeight, "Use live pose", hasLiveRobotPose, color(54, 60, 70));
   drawMgiActionButton(startX + useLiveWidth + gap, buttonY, validateWidth, buttonHeight, "Validate", canQueueBridgeRequest(), color(0, 120, 255));
   drawMgiActionButton(startX + useLiveWidth + gap + validateWidth + gap, buttonY, sendWidth, buttonHeight, mgiSendHoldActive ? "Holding..." : "Hold Send", canQueueBridgeRequest() && isCurrentMgiTargetValidated(), mgiSendHoldActive ? color(0, 180, 120) : color(0, 160, 110));
 }
 
+// Bouton d'action generique avec etat hover/disabled.
 void drawMgiActionButton(float x, float y, float w, float h, String label, boolean enabled, color baseColor) {
   boolean isHover = enabled && isPointInRect(mouseX, mouseY, x, y, w, h);
   color fillColor = enabled ? baseColor : color(58);
@@ -184,7 +217,10 @@ void drawMgiActionButton(float x, float y, float w, float h, String label, boole
   textAlign(LEFT, CENTER);
 }
 
+// Panneau de retour sur la validation IK et la derniere solution calculee.
 void drawMgiSolutionPanel(float x, float y, float w, float h) {
+  // Ce panneau ne recalcule rien lui-meme: il met en forme le dernier etat
+  // connu du bridge (validation, statut robot, statut securite, solution IK).
   noStroke();
   fill(32, 36, 44, 220);
   rect(x, y, w, h, 12);
@@ -230,6 +266,7 @@ void drawMgiSolutionPanel(float x, float y, float w, float h) {
   }
 }
 
+// Gere les clics dans l'onglet MGI: boutons, champ actif et steppers.
 void handleMgiMousePressed(float px, float py) {
   if (handleMgiActionButtonClick(px, py)) {
     return;
@@ -252,6 +289,7 @@ void handleMgiMousePressed(float px, float py) {
   clearMgiActiveField();
 }
 
+// Route les clics sur "Use live pose", "Validate" et "Hold Send".
 boolean handleMgiActionButtonClick(float px, float py) {
   float buttonY = getMgiButtonsY();
   float buttonHeight = 38;
@@ -264,6 +302,8 @@ boolean handleMgiActionButtonClick(float px, float py) {
 
   if (isPointInRect(px, py, startX, buttonY, useLiveWidth, buttonHeight)) {
     if (hasLiveRobotPose) {
+      // On copie simplement la pose live dans les champs; aucune validation
+      // n'est implicite, donc l'utilisateur doit ensuite recliquer Validate.
       syncMgiInputsFromTarget(liveCartesian);
       mgiLocalStatus = "Live pose loaded. Validate before sending.";
     } else {
@@ -276,6 +316,7 @@ boolean handleMgiActionButtonClick(float px, float py) {
   float validateX = startX + useLiveWidth + gap;
   if (isPointInRect(px, py, validateX, buttonY, validateWidth, buttonHeight)) {
     clearMgiActiveField();
+    // Toute validation commence par figer les champs texte dans "cartesian".
     if (!commitAllMgiFields()) {
       return true;
     }
@@ -283,6 +324,8 @@ boolean handleMgiActionButtonClick(float px, float py) {
       mgiLocalStatus = "Validation blocked: bridge unavailable.";
       return true;
     }
+    // La reponse n'est pas immediate: le bridge ecrira plus tard le resultat
+    // dans robot_pose.csv, qui sera reparce par loadRobotPoseFromBridge().
     sendRobotCartesianValidationCommand(cartesian);
     mgiLocalStatus = "Validation request queued.";
     return true;
@@ -298,6 +341,8 @@ boolean handleMgiActionButtonClick(float px, float py) {
       mgiLocalStatus = "Validate the current target before sending.";
       return true;
     }
+    // Le bouton est un "hold": on envoie l'execution au clic, puis un stop
+    // au mouseReleased global pour laisser l'operateur garder la main.
     if (sendRobotCartesianExecuteCommand(cartesian)) {
       mgiSendHoldActive = true;
       mgiLocalStatus = "Hold Send to keep the robot moving. Release to stop.";
@@ -308,6 +353,7 @@ boolean handleMgiActionButtonClick(float px, float py) {
   return false;
 }
 
+// Retrouve le champ de texte clique, s'il y en a un.
 int findMgiFieldIndexAt(float px, float py) {
   for (int i = 0; i < 6; i++) {
     if (isPointInRect(px, py, getMgiFieldX(i), getMgiRowY(i) - 12, getMgiFieldWidth(), 34)) {
@@ -317,6 +363,7 @@ int findMgiFieldIndexAt(float px, float py) {
   return -1;
 }
 
+// Retrouve la ligne dont un bouton + ou - a ete clique.
 int findMgiStepperFieldIndexAt(float px, float py) {
   for (int i = 0; i < 6; i++) {
     if (isPointInRect(px, py, getMgiMinusX(i), getMgiRowY(i) - 8, 26, 26) ||
@@ -327,6 +374,7 @@ int findMgiStepperFieldIndexAt(float px, float py) {
   return -1;
 }
 
+// Edition clavier des champs cartesien.
 void handleMgiKeyPressed() {
   if (mgiActiveFieldIndex < 0 || mgiActiveFieldIndex >= mgiInputTexts.length) {
     return;
@@ -339,6 +387,7 @@ void handleMgiKeyPressed() {
   }
 
   if (keyCode == ENTER || keyCode == RETURN) {
+    // Enter fige seulement le champ actif; il ne lance pas de validation bridge.
     commitMgiField(mgiActiveFieldIndex);
     return;
   }
@@ -369,6 +418,7 @@ void handleMgiKeyPressed() {
   }
 }
 
+// Le bouton "Hold Send" s'arrete au relachement de la souris.
 void handleMgiMouseReleased() {
   if (mgiSendHoldActive) {
     mgiSendHoldActive = false;
@@ -377,6 +427,7 @@ void handleMgiMouseReleased() {
   }
 }
 
+// Ajoute un caractere dans un champ en appliquant les regles de saisie decimale.
 void appendMgiCharacter(int index, char typed) {
   String current = mgiInputTexts[index];
 
@@ -413,7 +464,10 @@ void appendMgiCharacter(int index, char typed) {
   mgiLocalStatus = "Target changed. Validate again before sending.";
 }
 
+// Valide toute la grille avant d'envoyer une commande au bridge.
 boolean commitAllMgiFields() {
+  // On commit chaque champ l'un apres l'autre pour pouvoir placer le focus
+  // exactement sur celui qui pose probleme.
   for (int i = 0; i < mgiInputTexts.length; i++) {
     if (!commitMgiField(i)) {
       mgiActiveFieldIndex = i;
@@ -424,11 +478,17 @@ boolean commitAllMgiFields() {
   return true;
 }
 
+// Parse, borne et reformate un champ individuel.
 boolean commitMgiField(int index) {
   if (index < 0 || index >= mgiInputTexts.length) {
     return true;
   }
 
+  // La sequence est volontairement stricte:
+  // 1. normaliser le texte ("1," -> "1.")
+  // 2. parser en float
+  // 3. borner dans les limites physiques
+  // 4. reformater pour afficher une valeur canonique
   String normalizedValue = normalizeMgiInputText(mgiInputTexts[index]);
   if (normalizedValue.length() == 0) {
     mgiLocalStatus = "Invalid value for " + cartNames[index] + ".";
@@ -449,6 +509,7 @@ boolean commitMgiField(int index) {
   return true;
 }
 
+// Incremente ou decremente un axe avec le pas configure.
 void nudgeMgiValue(int index, float delta) {
   commitMgiField(index);
   float nextValue = constrain(cartesian[index] + delta, cartesian_min[index], cartesian_max[index]);
@@ -459,19 +520,25 @@ void nudgeMgiValue(int index, float delta) {
   mgiLocalStatus = "Target changed. Validate again before sending.";
 }
 
+// Recopie une pose dans les champs affiches et dans la cible interne.
 void syncMgiInputsFromTarget(float[] sourceValues) {
   for (int i = 0; i < cartesian.length; i++) {
     cartesian[i] = sourceValues[i];
     mgiInputTexts[i] = formatMgiValue(sourceValues[i]);
   }
+  // Ce flag evite de recopier plusieurs fois la meme pose live initiale.
   mgiInitialPoseCaptured = true;
 }
 
+// Format d'affichage standard pour les valeurs MGI.
 String formatMgiValue(float value) {
   return trim(nf(value, 1, 1));
 }
 
+// Etat utilisateur affiche au-dessus des boutons.
 String buildCurrentMgiStatus() {
+  // Priorite a l'etat de validation remonte par le bridge si celle-ci
+  // concerne bien la cible actuellement affichee a l'ecran.
   boolean currentMatchesValidation = doTargetsMatch(cartesian, bridgeValidationTarget);
   if (currentMatchesValidation) {
     if (bridgeValidationPassed) {
@@ -490,11 +557,15 @@ String buildCurrentMgiStatus() {
   return "Edit a target or load the live pose, then validate.";
 }
 
+// Une cible est "validee" seulement si la validation correspond exactement a la cible courante.
 boolean isCurrentMgiTargetValidated() {
   return bridgeValidationPassed && doTargetsMatch(cartesian, bridgeValidationTarget);
 }
 
+// Compare deux cibles avec une petite tolerance numerique.
 boolean doTargetsMatch(float[] first, float[] second) {
+  // Une petite tolerance evite qu'un simple bruit de formatage decimal
+  // invalide une cible qui est en pratique identique.
   if (first == null || second == null || first.length < 6 || second.length < 6) {
     return false;
   }
@@ -508,12 +579,16 @@ boolean doTargetsMatch(float[] first, float[] second) {
   return true;
 }
 
+// Sortie propre du mode edition.
 void clearMgiActiveField() {
   mgiActiveFieldIndex = -1;
   mgiReplaceSelectionOnNextInput = false;
 }
 
+// Invalide le cache de validation des qu'une condition change.
 void clearMgiValidationCache(String statusMessage) {
+  // Appelee notamment sur reconnect bridge ou quand un contexte global change.
+  // On invalide tout ce qui depend d'une validation precedente.
   bridgeValidationPassed = false;
   bridgeValidationStatus = "not validated";
   zeroFloatArray(bridgeValidationTarget);
@@ -523,6 +598,7 @@ void clearMgiValidationCache(String statusMessage) {
   mgiLocalStatus = statusMessage;
 }
 
+// Helpers de layout pour garder une geometrie coherente quand la fenetre change.
 float getMgiPanelWidth() {
   return (width - (3 * width * 0.05)) / 2.0;
 }
@@ -573,13 +649,18 @@ float getMgiPlusX(int index) {
   return getMgiMinusX(index) + 26 + 8;
 }
 
+// Au premier retour de telemetrie live, on peut precharger le formulaire avec la pose reelle.
 void captureInitialMgiPoseFromRobotIfNeeded() {
+  // Cette fonction est appelee depuis loadRobotPoseFromBridge() des qu'une vraie
+  // pose live existe. Elle ne s'executera qu'une seule fois tant qu'on ne remet
+  // pas explicitement mgiInitialPoseCaptured a false.
   if (!mgiInitialPoseCaptured && hasLiveRobotPose) {
     syncMgiInputsFromTarget(liveCartesian);
     mgiLocalStatus = "Initial live pose acquired. Validate before sending.";
   }
 }
 
+// Normalise les saisies intermediaires avant parse float.
 String normalizeMgiInputText(String rawText) {
   String normalized = trim(rawText);
   normalized = normalized.replace(',', '.');
@@ -600,6 +681,7 @@ String normalizeMgiInputText(String rawText) {
   return normalized;
 }
 
+// Parse tolerant avec retour NaN en cas d'echec.
 float parseMgiInputValue(String rawText) {
   try {
     return Float.valueOf(rawText);

@@ -1,3 +1,18 @@
+// ============================================================================
+// Onglet de controle manuel.
+// Cette fonction est surtout une fonction de layout: elle assemble trois blocs:
+// - sliders articulaires locaux
+// - carte capteur de force
+// - preview 3D
+//
+// La logique metier associee n'est pas ici:
+// - la carte capteur est pilotee par ForceSensor.pde
+// - la preview 3D est pilotee par Robot3DView.pde
+// - les sliders mettent a jour "joints" pour l'affichage, mais les commandes
+//   automatiques de cet onglet partent surtout du module force -> bridge
+// ============================================================================
+
+// Onglet manuel: sliders articulaires, capteur de force et preview 3D.
 void draw_menus_3() {
   float marginX = width * 0.05;
   float marginY = height * 0.15;
@@ -34,6 +49,8 @@ void draw_menus_3() {
     float x = marginX + (col * (panelWidth + marginX));
     float y = controlsStartY + (row * spacingV);
 
+    // Ici, drawCustomSlider() ne fait qu'actualiser la consigne locale et le
+    // rendu. Il n'y a pas d'envoi robot direct depuis cette boucle.
     joints[i] = drawCustomSlider(x, y, panelWidth, names[i], joints[i], joint_min[i], joint_max[i], true);
   }
 
@@ -49,6 +66,10 @@ void draw_menus_3() {
   float cardGap = 14;
   boolean useStackedLayout = bottomWidth < 880;
 
+  // Le bas de page est responsive:
+  // - fenetre large  -> capteur et 3D en colonnes
+  // - fenetre etroite -> capteur puis 3D empiles verticalement
+  // Passe en affichage vertical sur les fenetres trop etroites.
   if (useStackedLayout) {
     float sensorH = sensorCardHeight * 0.56;
     float vizH = sensorCardHeight - sensorH - cardGap;
@@ -62,6 +83,7 @@ void draw_menus_3() {
     float vizX = marginX + (bottomWidth - vizW) * 0.5;
     drawRobot3DPanel(vizX, sensorCardY + sensorH + cardGap, vizW, vizH, "3D robot preview (manual)");
   } else {
+    // Sinon, on garde la carte capteur et la vue 3D cote a cote.
     float vizCardWidth = constrain(bottomWidth * 0.34, 300, 430);
     float sensorCardWidth = bottomWidth - vizCardWidth - cardGap;
     if (sensorCardWidth < 320) {

@@ -1,7 +1,22 @@
+// ============================================================================
+// Onglet MGD (Modele Geometrique Direct).
+// Cet ecran travaille en espace articulaire:
+// - les sliders manipulent directement J1..J6
+// - la telemetrie live est recopied dans "joints" quand on ne drag pas
+// - une seule commande est envoyee au relachement du slider
+//
+// Chaine d'appel principale:
+// draw_menus_1() -> drawJointControlSlider() pour chaque axe
+//                -> drawRobot3DPanel() pour la preview
+//                -> handleMgdSliderRelease() pour l'envoi final
+// ============================================================================
+
+// Etat du slider actuellement en train d'etre glisse.
 boolean mgdSliderDragActive = false;
 boolean mgdSliderHadChange = false;
 int mgdActiveSliderIndex = -1;
 
+// Onglet MGD: pilotage direct en espace articulaire.
 void draw_menus_1() {
   float marginX = width * 0.05;
   float marginY = height * 0.15;
@@ -10,6 +25,7 @@ void draw_menus_1() {
   float subtitleY = marginY - 22;
   float controlsStartY = marginY + 22;
 
+  // Hors interaction utilisateur, on recopie les valeurs live pour garder l'IHM synchronisee.
   if (hasLiveRobotPose && !mgdSliderDragActive) {
     arrayCopy(liveJoints, joints);
   }
@@ -47,6 +63,9 @@ void draw_menus_1() {
     float x = marginX + (col * (panelWidth + marginX));
     float y = controlsStartY + (row * spacingV);
 
+    // Chaque slider modifie uniquement l'etat local. L'envoi bridge est
+    // volontairement differe au relachement pour eviter un flux de commandes
+    // dense pendant le drag.
     joints[i] = drawJointControlSlider(
       i,
       x,
@@ -59,6 +78,7 @@ void draw_menus_1() {
       );
   }
 
+  // La preview 3D reutilise le meme tableau "joints" que les sliders.
   float vizX = marginX;
   float vizY = controlsStartY + (3 * spacingV) + 34;
   float vizW = constrain(width * 0.78, 360, 820);
@@ -69,14 +89,18 @@ void draw_menus_1() {
   vizH = constrain(vizH, 120, 340);
   drawRobot3DPanel(vizX, vizY, vizW, vizH, "3D robot preview (joint space)");
 
+  // Ce test doit rester en fin de frame car il depend de l'etat du drag
+  // accumule pendant les appels drawJointControlSlider().
   handleMgdSliderRelease();
 }
 
+// Slider specialise MGD: affiche la position reelle et ne pousse la commande qu'au relachement.
 float drawJointControlSlider(int index, float x, float y, float w, String label, float val, float min, float max) {
   boolean isOverSlider = mouseX > x && mouseX < x + w && mouseY > y - 20 && mouseY < y + 30;
 
   if (mousePressed && isOverSlider && (!mgdSliderDragActive || mgdActiveSliderIndex == index)) {
     if (!mgdSliderDragActive) {
+      // Le premier slider saisi devient "owner" du drag jusqu'au relachement.
       mgdSliderDragActive = true;
       mgdActiveSliderIndex = index;
       mgdSliderHadChange = false;
@@ -94,6 +118,7 @@ float drawJointControlSlider(int index, float x, float y, float w, String label,
   line(x, y + 10, x + w, y + 10);
 
   if (hasLiveRobotPose) {
+    // Le trait vert montre la position reelle du robot a cote de la consigne locale.
     float actualX = map(liveJoints[index], min, max, x, x + w);
     stroke(0, 255, 150);
     strokeWeight(2);
@@ -123,11 +148,15 @@ float drawJointControlSlider(int index, float x, float y, float w, String label,
   return val;
 }
 
+// Envoie une seule commande quand le drag se termine, pour eviter de saturer le bridge.
 void handleMgdSliderRelease() {
   if (!mgdSliderDragActive || mousePressed) {
     return;
   }
 
+  // Une fois la souris relachee, on decide quoi faire de la derniere consigne:
+  // - robot live disponible -> envoi reel
+  // - mode hors ligne -> simple feedback utilisateur
   if (mgdSliderHadChange && hasLiveRobotPose) {
     sendRobotJointCommand(joints);
   } else if (mgdSliderHadChange) {
@@ -139,6 +168,7 @@ void handleMgdSliderRelease() {
   mgdActiveSliderIndex = -1;
 }
 
+// Slider graphique reutilisable par plusieurs onglets.
 float drawCustomSlider(float x, float y, float w, String label, float val, float min, float max, boolean interactive) {
   stroke(60);
   strokeWeight(3);
