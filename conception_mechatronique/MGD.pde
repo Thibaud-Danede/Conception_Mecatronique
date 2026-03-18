@@ -126,7 +126,7 @@ float drawJointControlSlider(int index, float x, float y, float w, String label,
   }
 
   float knobX = map(val, min, max, x, x + w);
-  fill(255, 150, 0);
+  fill(0, 120, 250);
   noStroke();
   ellipse(knobX, y + 10, 20, 20);
 
@@ -134,7 +134,7 @@ float drawJointControlSlider(int index, float x, float y, float w, String label,
   textSize(constrain(width/70, 12, 16));
   text(label, x, y - 15);
 
-  fill(255, 150, 0);
+  fill(0, 120, 250);
   textAlign(RIGHT, CENTER);
   text(nf(val, 1, 1), x + w, y - 15);
 
@@ -179,7 +179,7 @@ float drawCustomSlider(float x, float y, float w, String label, float val, float
   }
 
   float knobX = map(val, min, max, x, x + w);
-  fill(255, 150, 0);
+  fill(0, 120, 250);
   noStroke();
   ellipse(knobX, y + 10, 20, 20);
 
@@ -187,7 +187,7 @@ float drawCustomSlider(float x, float y, float w, String label, float val, float
   textSize(constrain(width/70, 12, 16));
   text(label, x, y - 15);
 
-  fill(hasLiveRobotPose ? color(0, 255, 150) : color(255, 150, 0));
+  fill(hasLiveRobotPose ? color(0, 255, 150) : color(0, 120, 250));
   textAlign(RIGHT, CENTER);
   text(nf(val, 1, 1), x + w, y - 15);
   textAlign(LEFT, CENTER);
