@@ -1,16 +1,16 @@
 connected,0
-timestamp,2026-03-18T09:51:03.3207997+01:00
+timestamp,2026-03-18T10:56:13
 ip,http://192.168.1.227:18333
 real_ready,0
 safety_ready,0
 joints,0,0,0,0,0,0
 cartesian,0,0,0,0,0,0
-robot_status,disconnected (pose -1, state -1)
+robot_status,waiting for bridge
 robot_mode_status,real unavailable
-safety_status,self collision unavailable (-1)
-diagnostic_status,network issue
-diagnostic_network,web 18333 unreachable | sdk ctrl 502 unreachable | sdk report 30002 unreachable
-diagnostic_sdk,telemetry failed (pose -1, state -1)
+safety_status,self collision unavailable
+diagnostic_status,diagnostic pending
+diagnostic_network,web port check pending
+diagnostic_sdk,SDK check pending
 command_mode,none
 command_sequence,0
 command_status,idle
@@ -18,5 +18,3 @@ validation_valid,0
 validation_status,not validated
 validation_target,0,0,0,0,0,0
 validation_joints,0,0,0,0,0,0
-ik_valid,0
-ik_joints,0,0,0,0,0,0
