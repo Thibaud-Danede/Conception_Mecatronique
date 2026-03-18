@@ -189,6 +189,7 @@ void startRobotBridgeProcess() {
 
 // Hook appele a la fermeture du sketch Processing.
 public void dispose() {
+  stopMoodleCsvRecordingOnDispose();
   closeForceSensorPort();
   stopRobotBridgeProcess();
   cleanupStaleRobotBridgeProcessesIfNeeded();
@@ -549,6 +550,18 @@ boolean sendRobotToolDeltaCommand(float[] deltaToolPose) {
   return true;
 }
 
+// Variante reservee aux degagements de securite internes: on bypass seulement
+// le latch logiciel local, tout en exigeant un robot reel prete cote bridge.
+boolean sendRobotEmergencyToolDeltaCommand(float[] deltaToolPose) {
+  if (!canQueueEmergencyMotionCommand()) {
+    bridgeCommandStatus = "emergency tool delta blocked: " + getEmergencyMotionBlockReason();
+    return false;
+  }
+
+  sendRobotCommand("tool_delta", deltaToolPose);
+  return true;
+}
+
 // Vitesse outil continue, utilisee notamment par le module force.
 boolean sendRobotToolVelocityCommand(float[] toolVelocity) {
   if (!canQueueMotionCommand()) {
@@ -647,6 +660,10 @@ boolean canQueueMotionCommand() {
   return canQueueBridgeRequest() && !isForceSafetyStopLatched() && hasRobotConnection && bridgeRealReady && bridgeSafetyReady;
 }
 
+boolean canQueueEmergencyMotionCommand() {
+  return canQueueBridgeRequest() && hasRobotConnection && bridgeRealReady && bridgeSafetyReady;
+}
+
 // Raison lisible pour l'operateur quand un mouvement est refuse.
 String getMotionBlockReason() {
   // L'interlock de force est teste en premier pour faire remonter la vraie cause
@@ -655,6 +672,26 @@ String getMotionBlockReason() {
     return getForceSafetyStopMotionBlockReason();
   }
 
+  if (!canQueueBridgeRequest()) {
+    return "bridge unavailable";
+  }
+
+  if (!hasRobotConnection) {
+    return "robot disconnected";
+  }
+
+  if (!bridgeRealReady) {
+    return "real robot mode not confirmed";
+  }
+
+  if (!bridgeSafetyReady) {
+    return "self collision detection unavailable";
+  }
+
+  return "robot unavailable";
+}
+
+String getEmergencyMotionBlockReason() {
   if (!canQueueBridgeRequest()) {
     return "bridge unavailable";
   }
@@ -691,10 +728,13 @@ String buildRobotBridgeTimestamp() {
 // Grande synthese d'etat visible dans le footer du sketch.
 String buildFooterStatus() {
   String bridgeStatus = getBridgeRuntimeStatus();
+  String measureSegment = buildMeasureUseCaseFooterSegment();
   if (isForceSafetyStopLatched()) {
     // Tant qu'un safety stop est latche, le footer doit mettre cet etat au
     // premier plan plutot que les informations de pose ou de diagnostic.
-    return "FORCE SAFETY STOP LATCHED | " + forceSafetyStopStatus + " | bridge: " + bridgeStatus;
+    return "FORCE SAFETY STOP LATCHED | " + forceSafetyStopStatus +
+      (measureSegment.length() > 0 ? " | " + measureSegment : "") +
+      " | bridge: " + bridgeStatus;
   }
 
   String connectionLabel = hasRobotConnection ? "xArm CONNECTED" : "xArm DISCONNECTED";
@@ -702,10 +742,15 @@ String buildFooterStatus() {
     // Quand une pose live existe, on privilegie un resume "operateur" axe sur
     // la position et le dernier ordre plutot que sur les diagnostics bruts.
     int ageMs = max(0, millis() - lastRobotUpdateMs);
-    return connectionLabel + " | " + liveRobotModeStatus + " | " + liveSafetyStatus + " | X: " + nf(liveCartesian[0], 1, 1) + " | Y: " + nf(liveCartesian[1], 1, 1) + " | Z: " + nf(liveCartesian[2], 1, 1) + " | " + bridgeCommandStatus + " | bridge: " + bridgeStatus + " | age: " + ageMs + " ms";
+    return connectionLabel + " | " + liveRobotModeStatus + " | " + liveSafetyStatus +
+      (measureSegment.length() > 0 ? " | " + measureSegment : "") +
+      " | X: " + nf(liveCartesian[0], 1, 1) + " | Y: " + nf(liveCartesian[1], 1, 1) + " | Z: " + nf(liveCartesian[2], 1, 1) +
+      " | " + bridgeCommandStatus + " | bridge: " + bridgeStatus + " | age: " + ageMs + " ms";
   }
 
-  return connectionLabel + " | " + liveRobotStatus + " | diag: " + liveDiagnosticStatus + " | net: " + liveDiagnosticNetwork + " | sdk: " + liveDiagnosticSdk + " | bridge: " + bridgeStatus;
+  return connectionLabel + " | " + liveRobotStatus +
+    (measureSegment.length() > 0 ? " | " + measureSegment : "") +
+    " | diag: " + liveDiagnosticStatus + " | net: " + liveDiagnosticNetwork + " | sdk: " + liveDiagnosticSdk + " | bridge: " + bridgeStatus;
 }
 
 // Carte de telemetrie live affichee en bas a droite.

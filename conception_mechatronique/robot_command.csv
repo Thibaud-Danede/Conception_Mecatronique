@@ -1,4 +1,4 @@
-sequence,0
-timestamp,2026-03-18T09:49:07
-mode,none
-values,0,0,0,0,0,0
+sequence,25
+timestamp,2026-03-18T13:30:35
+mode,joints
+values,95.21818,64.53611,-51.617645,-0.4085816,-10.87229,-0.4813111

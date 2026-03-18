@@ -78,7 +78,9 @@ void draw_menus_2() {
 
   float buttonY = getMgiButtonsY();
   float buttonHeight = 38;
-  float lowerPanelY = buttonY + buttonHeight + 18;
+  float measurePanelY = buttonY + buttonHeight + 12;
+  float measurePanelH = drawMeasureUseCasePanel(marginX, measurePanelY, width - (2 * marginX));
+  float lowerPanelY = measurePanelY + measurePanelH + 12;
   float lowerPanelBottom = height - 48;
   float lowerPanelH = lowerPanelBottom - lowerPanelY;
   lowerPanelH = min(280, lowerPanelH);

@@ -87,3 +87,29 @@ boolean forceSensorAutoNudgeInvertDirection = false;
 boolean forceSafetyStopEnabled = true;
 float forceSafetyStopThresholdN = 2.0;
 boolean forceSafetyStopUseAbsoluteValue = true;
+
+// ===== CSV de rendu Moodle =====
+// Export independant des CSV techniques du bridge.
+String moodleCsvFileName = "moodle_force_positionz.csv";
+int moodleCsvSampleIntervalMs = 100;
+boolean moodleCsvAppendToExistingFile = true;
+boolean moodleCsvAutoStartEnabled = true;
+
+// ===== Use case "mesure" / rigidite plaque =====
+// Ce mode est active depuis MGD/MGI et capture une reference force + position Z
+// pour estimer ensuite une rigidite approchée |DeltaF| / |DeltaZ|.
+boolean measureUseCaseAutoReconnectSensor = true;
+float measureUseCaseContactForceThresholdN = 0.5;
+float measureUseCaseTargetForceThresholdN = 5.0;
+float measureUseCaseSafetyForceLimitN = 12.0;
+float measureUseCaseMinDisplacementMm = 0.3;
+int measureUseCaseSampleIntervalMs = 40;
+boolean measureUseCaseAutoReleaseOnSafetyStop = true;
+float measureUseCaseAutoReleaseDeltaMm = 8.0;
+boolean measureUseCaseAutoReleaseInvertDirection = false;
+
+// ===== CSV dedie au use case mesure =====
+// Ce fichier est separe du CSV Moodle pour retrouver facilement les mesures
+// de rigidite sans bruit diagnostic.
+String measureCsvFileName = "measure_rigidity.csv";
+boolean measureCsvAppendToExistingFile = true;

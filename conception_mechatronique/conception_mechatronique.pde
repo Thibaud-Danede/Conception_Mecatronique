@@ -42,8 +42,11 @@ void setup() {
   setupRobotBridge();
   setupMgiUi();
   setupForceSensor();
+  setupMeasureUseCase();
+  setupMeasureCsvExport();
   // Module transverse de securite, branche apres le capteur qu'il observe.
   setupSafetyInterlocks();
+  setupMoodleCsvExport();
   setupRobot3DView();
 }
 
@@ -57,6 +60,9 @@ void draw() {
   updateForceSensor();
   // L'interlock lit la mesure capteur fraiche et peut eventuellement latche un stop.
   updateSafetyInterlocks();
+  updateMeasureUseCase();
+  updateMeasureCsvExport();
+  updateMoodleCsvExport();
   beginRobot3DFrame();
   cursor(ARROW);
 
@@ -78,13 +84,16 @@ void draw() {
 // Barre haute commune a tous les onglets.
 void drawHeader() {
   float headerHeight = 60;
+  float measureButtonWidth = 122;
   float homeButtonWidth = 96;
   float reconnectButtonWidth = 132;
   float reconnectButtonHeight = 34;
+  boolean showMeasureButton = isMeasureUseCaseSupportedTab();
   float reconnectButtonX = width - reconnectButtonWidth - 18;
   float homeButtonX = reconnectButtonX - homeButtonWidth - 10;
+  float measureButtonX = homeButtonX - measureButtonWidth - 10;
   float reconnectButtonY = 13;
-  float tabAreaWidth = homeButtonX - 12;
+  float tabAreaWidth = (showMeasureButton ? measureButtonX : homeButtonX) - 12;
   float tabWidth = tabAreaWidth / 3.0;
 
   noStroke();
@@ -94,6 +103,9 @@ void drawHeader() {
   drawTab(0, 0, tabWidth, headerHeight, "MODELE GEOMETRIQUE DIRECT (MGD)", 0);
   drawTab(tabWidth, 0, tabWidth, headerHeight, "MODELE GEOMETRIQUE INVERSE (MGI)", 1);
   drawTab(2 * tabWidth, 0, tabWidth, headerHeight, "CONTROL MANUELLE", 2);
+  if (showMeasureButton) {
+    drawMeasureUseCaseToggleButton(measureButtonX, reconnectButtonY, measureButtonWidth, reconnectButtonHeight);
+  }
   drawHomeButton(homeButtonX, reconnectButtonY, homeButtonWidth, reconnectButtonHeight);
   drawReconnectButton(reconnectButtonX, reconnectButtonY, reconnectButtonWidth, reconnectButtonHeight);
 
@@ -261,13 +273,16 @@ void mouseReleased() {
 // Gere la navigation entre onglets et les boutons globaux du header.
 boolean handleHeaderMousePressed(float px, float py) {
   float headerHeight = 60;
+  float measureButtonWidth = 122;
   float homeButtonWidth = 96;
   float reconnectButtonWidth = 132;
   float reconnectButtonHeight = 34;
+  boolean showMeasureButton = isMeasureUseCaseSupportedTab();
   float reconnectButtonX = width - reconnectButtonWidth - 18;
   float homeButtonX = reconnectButtonX - homeButtonWidth - 10;
+  float measureButtonX = homeButtonX - measureButtonWidth - 10;
   float reconnectButtonY = 13;
-  float tabAreaWidth = homeButtonX - 12;
+  float tabAreaWidth = (showMeasureButton ? measureButtonX : homeButtonX) - 12;
   float tabWidth = tabAreaWidth / 3.0;
 
   // Les boutons fixes du header sont testes avant le changement d'onglet.
@@ -286,14 +301,24 @@ boolean handleHeaderMousePressed(float px, float py) {
     return true;
   }
 
+  if (showMeasureButton && isPointInRect(px, py, measureButtonX, reconnectButtonY, measureButtonWidth, reconnectButtonHeight)) {
+    toggleMeasureUseCase();
+    return true;
+  }
+
   if (py >= 0 && py <= headerHeight && px >= 0 && px <= tabAreaWidth) {
+    int nextMenu = menus;
     if (px < tabWidth) {
-      menus = 0;
+      nextMenu = 0;
     } else if (px < 2 * tabWidth) {
-      menus = 1;
+      nextMenu = 1;
     } else {
-      menus = 2;
+      nextMenu = 2;
     }
+    if (nextMenu == 2 && measureUseCaseEnabled) {
+      disableMeasureUseCase("Measure mode disabled on manual tab.");
+    }
+    menus = nextMenu;
     // On quitte proprement l'edition clavier MGI quand on change d'ecran.
     clearMgiActiveField();
     return true;

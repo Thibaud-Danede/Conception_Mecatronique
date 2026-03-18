@@ -17,6 +17,8 @@ boolean forceSafetyStopLatched = false;
 // Resume humain visible dans le footer et dans la popup.
 String forceSafetyStopStatus = "force safety stop idle";
 String forceSafetyStopTriggerSource = "";
+float forceSafetyStopThresholdUsedN = 0.0;
+boolean forceSafetyStopAutoReleaseQueued = false;
 // On memorise a la fois la force brute et la valeur observee apres eventuel abs().
 float forceSafetyStopTriggeredForceN = 0.0;
 float forceSafetyStopTriggeredObservedForceN = 0.0;
@@ -28,6 +30,10 @@ float forceSafetyResetBtnX = 0;
 float forceSafetyResetBtnY = 0;
 float forceSafetyResetBtnW = 0;
 float forceSafetyResetBtnH = 0;
+float forceSafetyMeasureBtnX = 0;
+float forceSafetyMeasureBtnY = 0;
+float forceSafetyMeasureBtnW = 0;
+float forceSafetyMeasureBtnH = 0;
 
 void setupSafetyInterlocks() {
   // Au demarrage, l'interlock est neutre mais deja arme logiquement si la config l'autorise.
@@ -52,26 +58,28 @@ void updateSafetyInterlocks() {
 
   float rawForceN = getForceSensorValueN();
   float observedForceN = forceSafetyStopUseAbsoluteValue ? abs(rawForceN) : rawForceN;
-  if (observedForceN <= max(0.0, forceSafetyStopThresholdN)) {
+  float activeThresholdN = getActiveForceSafetyStopThresholdN();
+  if (observedForceN <= activeThresholdN) {
     return;
   }
 
   // Le premier depassement du seuil bascule l'interlock dans un etat latche.
-  triggerForceSafetyStop(rawForceN, observedForceN);
+  triggerForceSafetyStop(rawForceN, observedForceN, activeThresholdN);
 }
 
-void triggerForceSafetyStop(float rawForceN, float observedForceN) {
+void triggerForceSafetyStop(float rawForceN, float observedForceN, float thresholdUsedN) {
   int now = millis();
   // Une fois latche, plus aucune commande de mouvement ne doit etre acceptee
   // tant qu'un reset explicite n'a pas ete demande par l'utilisateur.
   forceSafetyStopLatched = true;
   forceSafetyStopTriggeredForceN = rawForceN;
   forceSafetyStopTriggeredObservedForceN = observedForceN;
+  forceSafetyStopThresholdUsedN = thresholdUsedN;
   forceSafetyStopTriggeredAtMs = now;
   forceSafetyStopTriggerSource = getForceSafetyStopSourceLabel();
   forceSafetyStopStatus =
     "force safety stop latched at " + nf(observedForceN, 1, 2) +
-    " N (threshold " + nf(forceSafetyStopThresholdN, 1, 2) + " N)";
+    " N (threshold " + nf(thresholdUsedN, 1, 2) + " N)";
 
   // On remet a zero les interactions "hold" pour que l'IHM reflete bien l'arret.
   homeButtonHoldActive = false;
@@ -80,23 +88,37 @@ void triggerForceSafetyStop(float rawForceN, float observedForceN) {
   mgdSliderHadChange = false;
   mgdActiveSliderIndex = -1;
 
-  // Par precaution, on coupe aussi tout etat auto-nudge derive du capteur.
-  // Cela evite qu'une logique de vitesse residuelle tente de repartir juste apres le stop.
-  requestForceSensorAutoNudgeStop("force safety stop latched", now);
+  boolean autoReleaseQueued = false;
+  if (shouldAutoReleaseMeasureSafetyStop()) {
+    // En mode mesure, on privilegie un petit degagement oppose a la force
+    // plutot qu'un simple gel contre la plaque.
+    resetForceSensorAutoNudgeState("force safety stop latched");
+    autoReleaseQueued = queueMeasureSafetyAutoRelease(rawForceN);
+  } else {
+    // Hors mode mesure, on coupe toute logique derivee et on garde un stop sec.
+    requestForceSensorAutoNudgeStop("force safety stop latched", now);
+  }
 
-  if (sendRobotStopCommand()) {
+  if (autoReleaseQueued) {
+    forceSafetyStopAutoReleaseQueued = true;
+    forceSafetyStopLastStopSequence = bridgeCommandSequence;
+    bridgeCommandStatus = "measure safety stop -> auto release queued";
+  } else if (sendRobotStopCommand()) {
     // On memorise la sequence du stop pour faciliter un diagnostic futur si besoin.
     forceSafetyStopLastStopSequence = bridgeCommandSequence;
     bridgeCommandStatus = "force safety stop -> stop requested";
   } else {
     bridgeCommandStatus = "force safety stop latched, but stop command could not be queued";
   }
+
+  recordMoodleCsvEvent("force_safety_stop_latched");
 }
 
 void resetForceSafetyStopLatch() {
   // Le reset ne relance rien tout seul: il retire seulement le verrou logiciel.
   // Si la force est toujours au-dessus du seuil, updateSafetyInterlocks() retriggera aussitot.
   resetForceSafetyStopState("force safety stop reset");
+  recordMoodleCsvEvent("force_safety_stop_reset");
 }
 
 void resetForceSafetyStopState(String nextStatus) {
@@ -104,6 +126,8 @@ void resetForceSafetyStopState(String nextStatus) {
   forceSafetyStopLatched = false;
   forceSafetyStopStatus = nextStatus;
   forceSafetyStopTriggerSource = "";
+  forceSafetyStopThresholdUsedN = 0.0;
+  forceSafetyStopAutoReleaseQueued = false;
   forceSafetyStopTriggeredForceN = 0.0;
   forceSafetyStopTriggeredObservedForceN = 0.0;
   forceSafetyStopTriggeredAtMs = -1;
@@ -125,10 +149,10 @@ String getForceSafetyStopMotionBlockReason() {
 
 String getForceSafetyStopSourceLabel() {
   if (menus == 0) {
-    return "MGD";
+    return measureUseCaseEnabled ? "MGD measure mode" : "MGD";
   }
   if (menus == 1) {
-    return "MGI";
+    return measureUseCaseEnabled ? "MGI measure mode" : "MGI";
   }
   if (menus == 2) {
     return "CONTROL MANUELLE";
@@ -136,9 +160,44 @@ String getForceSafetyStopSourceLabel() {
   return "unknown";
 }
 
+float getActiveForceSafetyStopThresholdN() {
+  if (measureUseCaseEnabled && isMeasureUseCaseSupportedTab()) {
+    return max(0.0, measureUseCaseSafetyForceLimitN);
+  }
+  return max(0.0, forceSafetyStopThresholdN);
+}
+
+boolean shouldAutoReleaseMeasureSafetyStop() {
+  return measureUseCaseEnabled &&
+    isMeasureUseCaseSupportedTab() &&
+    measureUseCaseAutoReleaseOnSafetyStop;
+}
+
+boolean queueMeasureSafetyAutoRelease(float rawForceN) {
+  float deltaZMm = rawForceN >= 0 ? -measureUseCaseAutoReleaseDeltaMm : measureUseCaseAutoReleaseDeltaMm;
+  if (measureUseCaseAutoReleaseInvertDirection) {
+    deltaZMm = -deltaZMm;
+  }
+
+  float[] deltaToolPose = {0, 0, deltaZMm, 0, 0, 0};
+  boolean commandQueued = sendRobotEmergencyToolDeltaCommand(deltaToolPose);
+  if (commandQueued) {
+    forceSafetyStopStatus =
+      "measure safety stop latched at " + nf(forceSafetyStopTriggeredObservedForceN, 1, 2) +
+      " N -> auto release queued (" + nf(deltaZMm, 1, 2) + " mm)";
+  }
+  return commandQueued;
+}
+
 boolean handleSafetyInterlockMousePressed(float px, float py) {
   if (!isForceSafetyStopLatched()) {
     return false;
+  }
+
+  if (shouldShowForceSafetyMeasureButton() &&
+    isPointInRect(px, py, forceSafetyMeasureBtnX, forceSafetyMeasureBtnY, forceSafetyMeasureBtnW, forceSafetyMeasureBtnH)) {
+    handleForceSafetySwitchToMeasure();
+    return true;
   }
 
   if (isPointInRect(px, py, forceSafetyResetBtnX, forceSafetyResetBtnY, forceSafetyResetBtnW, forceSafetyResetBtnH)) {
@@ -168,6 +227,7 @@ void drawSafetyInterlockOverlay() {
   float line2Y = panelY + 92;
   float line3Y = panelY + 120;
   float line4Y = panelY + 148;
+  float line5Y = panelY + 176;
   float buttonY = panelY + panelH - 54;
 
   fill(0, 170);
@@ -186,26 +246,92 @@ void drawSafetyInterlockOverlay() {
 
   fill(245);
   textSize(14);
-  text("The robot was stopped because the force threshold was exceeded outside manual control.", contentX, line1Y, panelW - 48, 26);
+  text(
+    forceSafetyStopAutoReleaseQueued
+    ? "The force limit was exceeded in Measure mode. A small automatic release move is requested opposite to the measured force."
+    : "The robot was stopped because the force threshold was exceeded outside manual control.",
+    contentX,
+    line1Y,
+    panelW - 48,
+    26
+  );
 
   fill(220);
   textSize(13);
   text("Source tab: " + forceSafetyStopTriggerSource, contentX, line2Y);
   text("Measured force: " + nf(forceSafetyStopTriggeredForceN, 1, 2) + " N", contentX, line3Y);
-  text("Observed threshold check: " + nf(forceSafetyStopTriggeredObservedForceN, 1, 2) + " N / limit " + nf(forceSafetyStopThresholdN, 1, 2) + " N", contentX, line4Y);
+  text("Observed threshold check: " + nf(forceSafetyStopTriggeredObservedForceN, 1, 2) + " N / limit " + nf(forceSafetyStopThresholdUsedN, 1, 2) + " N", contentX, line4Y);
+  if (shouldShowForceSafetyMeasureButton()) {
+    fill(255, 210, 120);
+    text("Measure mode available here: safety limit would become " + nf(measureUseCaseSafetyForceLimitN, 1, 2) + " N.", contentX, line5Y);
+  } else if (forceSafetyStopAutoReleaseQueued) {
+    fill(255, 210, 120);
+    text("Auto release delta: " + nf(getMeasureSafetyAutoReleaseDeltaMm(forceSafetyStopTriggeredForceN), 1, 2) + " mm on tool Z.", contentX, line5Y);
+  }
 
   fill(200);
   textSize(12);
-  text("Reset is manual. If the force is still above threshold, the stop will trigger again.", contentX, panelY + panelH - 86, panelW - 48, 32);
+  text(
+    shouldShowForceSafetyMeasureButton()
+    ? "If you are intentionally pressing on the plate, switch to Measure mode first. The stop will auto-clear only if the current force is below the Measure limit."
+    : "Reset is manual. If the force is still above threshold, the stop will trigger again.",
+    contentX,
+    panelY + panelH - 86,
+    panelW - 48,
+    32
+  );
 
   forceSafetyResetBtnW = 186;
   forceSafetyResetBtnH = 32;
   forceSafetyResetBtnX = panelX + panelW - forceSafetyResetBtnW - 24;
   forceSafetyResetBtnY = buttonY;
+  forceSafetyMeasureBtnW = 204;
+  forceSafetyMeasureBtnH = 32;
+  forceSafetyMeasureBtnX = contentX;
+  forceSafetyMeasureBtnY = buttonY;
 
-  // Le reset est l'unique action disponible tant que le stop est latche.
+  // La popup propose soit un basculement vers le use case mesure, soit un reset manuel.
+  if (shouldShowForceSafetyMeasureButton()) {
+    drawSafetyInterlockButton(forceSafetyMeasureBtnX, forceSafetyMeasureBtnY, forceSafetyMeasureBtnW, forceSafetyMeasureBtnH, "Switch to Measure", true);
+  }
   drawSafetyInterlockButton(forceSafetyResetBtnX, forceSafetyResetBtnY, forceSafetyResetBtnW, forceSafetyResetBtnH, "Reset safety stop", true);
   textAlign(LEFT, CENTER);
+}
+
+boolean shouldShowForceSafetyMeasureButton() {
+  return !measureUseCaseEnabled && isMeasureUseCaseSupportedTab();
+}
+
+void handleForceSafetySwitchToMeasure() {
+  enableMeasureUseCase();
+
+  if (forceSensorPort == null || !isForceSensorFresh()) {
+    forceSafetyStopStatus = "measure mode enabled from popup; waiting for fresh force data before reset";
+    return;
+  }
+
+  float rawForceN = getForceSensorValueN();
+  float observedForceN = forceSafetyStopUseAbsoluteValue ? abs(rawForceN) : rawForceN;
+  float measureThresholdN = getActiveForceSafetyStopThresholdN();
+
+  if (observedForceN <= measureThresholdN) {
+    resetForceSafetyStopState("force safety stop cleared after switching to measure mode");
+    bridgeCommandStatus = "measure mode enabled from safety popup";
+    recordMoodleCsvEvent("force_safety_stop_reset");
+    return;
+  }
+
+  forceSafetyStopStatus =
+    "measure mode enabled, but force still above measure limit (" +
+    nf(observedForceN, 1, 2) + " N > " + nf(measureThresholdN, 1, 2) + " N)";
+}
+
+float getMeasureSafetyAutoReleaseDeltaMm(float rawForceN) {
+  float deltaZMm = rawForceN >= 0 ? -measureUseCaseAutoReleaseDeltaMm : measureUseCaseAutoReleaseDeltaMm;
+  if (measureUseCaseAutoReleaseInvertDirection) {
+    deltaZMm = -deltaZMm;
+  }
+  return deltaZMm;
 }
 
 void drawSafetyInterlockButton(float x, float y, float w, float h, String label, boolean enabled) {

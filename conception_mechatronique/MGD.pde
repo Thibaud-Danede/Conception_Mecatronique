@@ -80,7 +80,9 @@ void draw_menus_1() {
 
   // La preview 3D reutilise le meme tableau "joints" que les sliders.
   float vizX = marginX;
-  float vizY = controlsStartY + (3 * spacingV) + 34;
+  float measurePanelY = controlsStartY + (3 * spacingV) + 10;
+  float measurePanelH = drawMeasureUseCasePanel(marginX, measurePanelY, width - (2 * marginX));
+  float vizY = measurePanelY + measurePanelH + 12;
   float vizW = constrain(width * 0.78, 360, 820);
   vizX = (width - vizW) * 0.5;
   float vizBottom = height - 44;

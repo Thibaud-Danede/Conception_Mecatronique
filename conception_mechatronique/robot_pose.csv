@@ -1,5 +1,5 @@
 connected,0
-timestamp,2026-03-18T09:51:03.3207997+01:00
+timestamp,2026-03-18T13:31:27.1264827+01:00
 ip,http://192.168.1.227:18333
 real_ready,0
 safety_ready,0
@@ -11,9 +11,9 @@ safety_status,self collision unavailable (-1)
 diagnostic_status,network issue
 diagnostic_network,web 18333 unreachable | sdk ctrl 502 unreachable | sdk report 30002 unreachable
 diagnostic_sdk,telemetry failed (pose -1, state -1)
-command_mode,none
-command_sequence,0
-command_status,idle
+command_mode,joints
+command_sequence,25
+command_status,joint command #25 sent
 validation_valid,0
 validation_status,not validated
 validation_target,0,0,0,0,0,0
