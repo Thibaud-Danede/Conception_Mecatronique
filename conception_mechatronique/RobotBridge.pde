@@ -616,6 +616,23 @@ boolean sendRobotCartesianExecuteCommand(float[] targetCartesian) {
   return true;
 }
 
+// Variante interne qui laisse le bridge refaire la validation sans passer
+// par le cache "Validate" de l'UI MGI.
+boolean sendRobotCartesianAutoExecuteCommand(float[] targetCartesian) {
+  if (!canQueueMotionCommand()) {
+    bridgeCommandStatus = "auto execute blocked: " + getMotionBlockReason();
+    return false;
+  }
+
+  if (targetCartesian == null || targetCartesian.length < 6) {
+    bridgeCommandStatus = "auto execute blocked: invalid target";
+    return false;
+  }
+
+  sendRobotCommand("cartesian_ik_execute", targetCartesian);
+  return true;
+}
+
 // Ecrit une commande structurante dans le CSV lu par le bridge C#.
 void sendRobotCommand(String mode, float[] values) {
   if (values == null || values.length < 6) {

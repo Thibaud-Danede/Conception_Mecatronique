@@ -25,7 +25,7 @@ String bridgeTargetIp = "http://192.168.1.227:18333";
 
 // Frequence de polling cote sketch et vitesse par defaut transmise au bridge
 // C#. Le bridge peut ensuite appliquer ses propres gardes-fous.
-int bridgeLaunchPollMs = 60;
+int bridgeLaunchPollMs = 20;
 float bridgeMotionSpeed = 12.0;
 boolean bridgeAutoStartEnabled = true;
 
@@ -53,7 +53,7 @@ String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;
 boolean forceSensorAutoConnectOnManualTab = false;
 boolean forceSensorAutoConnectForSafetyStop = true;
-int forceSensorPollIntervalMs = 80;
+int forceSensorPollIntervalMs = 40;
 int forceSensorWarmupDelayMs = 1800;
 
 // Tare automatique realisee apres la phase de boot du microcontroleur.
@@ -93,20 +93,36 @@ boolean forceSafetyStopUseAbsoluteValue = true;
 String moodleCsvFileName = "moodle_force_positionz.csv";
 int moodleCsvSampleIntervalMs = 100;
 boolean moodleCsvAppendToExistingFile = true;
-boolean moodleCsvAutoStartEnabled = true;
+boolean moodleCsvAutoStartEnabled = false;
 
 // ===== Use case "mesure" / rigidite plaque =====
 // Ce mode est active depuis MGD/MGI et capture une reference force + position Z
 // pour estimer ensuite une rigidite approchée |DeltaF| / |DeltaZ|.
 boolean measureUseCaseAutoReconnectSensor = true;
-float measureUseCaseContactForceThresholdN = 0.5;
-float measureUseCaseTargetForceThresholdN = 5.0;
-float measureUseCaseSafetyForceLimitN = 12.0;
+float measureUseCaseContactForceThresholdN = 0.10;
+float measureUseCaseTargetForceThresholdN = 10.0;
+float measureUseCaseSafetyForceLimitN = 30.0;
 float measureUseCaseMinDisplacementMm = 0.3;
 int measureUseCaseSampleIntervalMs = 40;
-boolean measureUseCaseAutoReleaseOnSafetyStop = true;
+boolean measureUseCaseAutoReleaseOnSafetyStop = false;
 float measureUseCaseAutoReleaseDeltaMm = 8.0;
 boolean measureUseCaseAutoReleaseInvertDirection = false;
+boolean measureUseCaseStopMotionOnCapture = true;
+int measureUseCasePauseAfterContactMs = 2000;
+int measureUseCasePauseAfterResultMs = 0;
+float measureUseCaseApproachVelocityMmS = 3.0;
+int measureUseCaseApproachCommandIntervalMs = 60;
+float measureUseCaseSlowApproachVelocityMmS = 0.25;
+int measureUseCaseSlowApproachCommandIntervalMs = 60;
+boolean measureUseCaseSlowApproachInvertDirection = false;
+float measureUseCaseLiftAfterCaptureDeltaMm = 10.0;
+int measureUseCaseLiftExitDelayMs = 900;
+float measureUseCaseLiftExitForceThresholdN = 0.50;
+boolean measureUseCaseAutoPreparePoseEnabled = true;
+float measureUseCasePrepareRollDeg = 180.0;
+float measureUseCasePreparePitchDeg = 0.0;
+boolean measureUseCasePrepareKeepCurrentYaw = true;
+float measureUseCasePrepareYawDeg = 0.0;
 
 // ===== CSV dedie au use case mesure =====
 // Ce fichier est separe du CSV Moodle pour retrouver facilement les mesures

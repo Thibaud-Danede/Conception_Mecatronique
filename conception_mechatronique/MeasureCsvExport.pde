@@ -39,9 +39,13 @@ void updateMeasureCsvExport() {
   if (measureUseCaseEnabled &&
     measureUseCaseResultCaptured &&
     !measureUseCaseResultLogged &&
-    resultJustCaptured &&
-    appendMeasureCsvSummaryRow()) {
-    measureUseCaseResultLogged = true;
+    resultJustCaptured) {
+    if (hasMeasureUseCaseExportableResult() && appendMeasureCsvSummaryRow()) {
+      measureUseCaseResultLogged = true;
+    } else if (!hasMeasureUseCaseExportableResult()) {
+      measureUseCaseResultLogged = true;
+      measureCsvStatus = "measure ignored: no usable Z delta in capture window";
+    }
   }
 
   measureCsvLastModeEnabled = measureUseCaseEnabled;
