@@ -49,14 +49,12 @@ float[] robot3d_joint_offset_deg = {0, 0, 0, 0, 0, 0};
 // ===== Capteur HX711 / ESP32 =====
 // Port serie et cadence de lecture du capteur de force. Processing lit ensuite
 // le flux ligne par ligne via serialEvent().
-String forceSensorComPort = "COM4"; // Force la connexion au port COM4, actuellement si c'est vide ça lague de ouf
-boolean forceSensorAutoDetectUsbPort = false; // Si true ça lance la boucle infinie de recherche du port (lague de zinzin)
+String forceSensorComPort = "COM4";
 int forceSensorBaudRate = 115200;
 boolean forceSensorAutoConnectOnManualTab = false;
 boolean forceSensorAutoConnectForSafetyStop = true;
 int forceSensorPollIntervalMs = 40;
 int forceSensorWarmupDelayMs = 1800;
-boolean forceSensorStopRobotOnDisconnect = true;
 
 // Tare automatique realisee apres la phase de boot du microcontroleur.
 // Les limites de buffer evitent qu'un port bavard monopolise le sketch.
@@ -102,8 +100,8 @@ boolean moodleCsvAutoStartEnabled = false;
 // pour estimer ensuite une rigidite approchée |DeltaF| / |DeltaZ|.
 boolean measureUseCaseAutoReconnectSensor = true;
 float measureUseCaseContactForceThresholdN = 0.10;
-float measureUseCaseTargetForceThresholdN = 30.0; // Valeur réglée à 30 pour aller un peu plus loin
-float measureUseCaseSafetyForceLimitN = 40.0; // Sécuité de threshold pour arrêter tout mouvement si on dépasse 40N
+float measureUseCaseTargetForceThresholdN = 30.0;
+float measureUseCaseSafetyForceLimitN = 40.0;
 float measureUseCaseMinDisplacementMm = 0.3;
 int measureUseCaseSampleIntervalMs = 40;
 boolean measureUseCaseAutoReleaseOnSafetyStop = false;

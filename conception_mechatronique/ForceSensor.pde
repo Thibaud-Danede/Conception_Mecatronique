@@ -23,6 +23,7 @@ String forceSensorResolvedPort = "";
 String forceSensorLastLine = "";
 float forceSensorValue = 0.0;
 String forceSensorUnit = "Kg";
+boolean forceSensorHadLiveData = false;
 
 // Horodatages utilises pour le polling, le timeout et la reconnexion.
 int lastForceSensorRequestMs = -1000;
@@ -68,6 +69,8 @@ void setupForceSensor() {
   forceSensorStatus = autoConnectEnabled
     ? "waiting for sensor auto connect"
     : "ready to connect";
+  forceSensorResolvedPort = "";
+  forceSensorHadLiveData = false;
   forceSensorAutoTarePending = false;
   forceSensorAutoTareAtMs = -1;
   resetForceSensorAutoNudgeState(forceSensorAutoNudgeEnabled ? "force control armed" : "force control disabled");
@@ -93,6 +96,11 @@ void updateForceSensor() {
   }
 
   int now = millis();
+
+  if (!isCurrentForceSensorPortStillAvailable()) {
+    handleUnexpectedForceSensorDisconnect("sensor usb disconnected");
+    return;
+  }
 
   // Cette sous-machine gere les etapes C -> Q -> M sans delay().
   updateForceSensorCalibration();
@@ -137,7 +145,8 @@ void updateForceSensor() {
   }
 
   if (lastForceSensorResponseMs >= 0 && now - lastForceSensorResponseMs > forceSensorDataTimeoutMs) {
-    forceSensorStatus = "connected - timeout";
+    handleUnexpectedForceSensorDisconnect("sensor timeout");
+    return;
   }
 
   if (!manualTabVisible) {
@@ -160,17 +169,18 @@ void openForceSensorPort() {
   closeForceSensorPort();
 
   forceSensorLastConnectAttemptMs = millis();
-  forceSensorResolvedPort = forceSensorComPort;
-  forceSensorStatus = "opening " + forceSensorComPort;
+  forceSensorResolvedPort = resolveForceSensorPortName();
+  forceSensorStatus = forceSensorResolvedPort.length() > 0
+    ? "opening " + forceSensorResolvedPort
+    : "serial sensor port not found";
 
   try {
-    if (!isConfiguredForceSensorPortAvailable()) {
+    if (forceSensorResolvedPort.length() == 0) {
       forceSensorResolvedPort = "";
-      forceSensorStatus = "serial port not found: " + forceSensorComPort;
       return;
     }
 
-    forceSensorPort = new Serial(this, forceSensorComPort, forceSensorBaudRate);
+    forceSensorPort = new Serial(this, forceSensorResolvedPort, forceSensorBaudRate);
     // Processing declenchera serialEvent() a chaque ligne terminee par '\n'.
     forceSensorPort.bufferUntil('\n');
     forceSensorPort.clear();
@@ -178,6 +188,7 @@ void openForceSensorPort() {
     forceSensorStartupMs = millis();
     lastForceSensorRequestMs = -1000;
     lastForceSensorResponseMs = -1;
+    forceSensorHadLiveData = false;
     forceSensorAutoTarePending = forceSensorAutoTareOnConnect;
     forceSensorAutoTareAtMs = forceSensorAutoTarePending
       ? forceSensorStartupMs + max(0, forceSensorWarmupDelayMs) + max(0, forceSensorAutoTareExtraDelayMs)
@@ -191,7 +202,7 @@ void openForceSensorPort() {
   catch (Exception ex) {
     forceSensorPort = null;
     forceSensorResolvedPort = "";
-    forceSensorStatus = "serial open error on " + forceSensorComPort;
+    forceSensorStatus = "serial open error";
   }
 }
 
@@ -205,8 +216,7 @@ void requestForceSensorMeasurement() {
     forceSensorPort.write("M\n");
   }
   catch (Exception ex) {
-    forceSensorStatus = "serial write error";
-    closeForceSensorPort();
+    handleUnexpectedForceSensorDisconnect("serial write error");
   }
 }
 
@@ -268,8 +278,7 @@ void updateForceSensorCalibration() {
     }
   }
   catch (Exception ex) {
-    forceSensorStatus = "calibration error";
-    closeForceSensorPort();
+    handleUnexpectedForceSensorDisconnect("calibration error");
   }
 }
 
@@ -304,8 +313,7 @@ void serialEvent(Serial activePort) {
     }
   }
   catch (Exception ex) {
-    forceSensorStatus = "serial read error";
-    closeForceSensorPort();
+    handleUnexpectedForceSensorDisconnect("serial read error");
   }
 
   if (forceSensorPort != null && forceSensorPort.available() > forceSensorMaxBufferedBytes) {
@@ -337,6 +345,7 @@ void parseForceSensorLine(String line) {
       forceSensorValue = parseFloatSafe(parts[0], forceSensorValue);
       forceSensorUnit = parts[1];
       lastForceSensorResponseMs = millis();
+      forceSensorHadLiveData = true;
       forceSensorStatus = "live";
     }
     return;
@@ -378,6 +387,7 @@ void closeForceSensorPort() {
   }
 
   forceSensorPort = null;
+  forceSensorResolvedPort = "";
 }
 
 // Une mesure est "fraiche" si elle date de moins que le timeout configure.
@@ -422,9 +432,111 @@ String getForceSensorSecondaryLabel() {
 
 // Libelle du bouton de connexion selon l'etat courant.
 String getForceSensorReconnectLabel() {
+  String targetLabel = getForceSensorRequestedPortLabel();
   return forceSensorPort == null
-    ? "Connect " + forceSensorComPort
-    : "Reconnect " + forceSensorComPort;
+    ? "Connect " + targetLabel
+    : "Reconnect " + targetLabel;
+}
+
+String getForceSensorRequestedPortLabel() {
+  String preferredPort = trim(forceSensorComPort);
+  if (preferredPort.length() > 0) {
+    return preferredPort;
+  }
+  return forceSensorAutoDetectUsbPort ? "USB sensor" : "sensor";
+}
+
+String resolveForceSensorPortName() {
+  String[] availablePorts = Serial.list();
+  if (availablePorts == null || availablePorts.length == 0) {
+    return "";
+  }
+
+  String preferredPort = trim(forceSensorComPort);
+  if (preferredPort.length() > 0) {
+    for (int i = 0; i < availablePorts.length; i++) {
+      if (availablePorts[i].equalsIgnoreCase(preferredPort)) {
+        return availablePorts[i];
+      }
+    }
+    if (!forceSensorAutoDetectUsbPort) {
+      return "";
+    }
+  } else if (!forceSensorAutoDetectUsbPort) {
+    return "";
+  }
+
+  int bestIndex = -1;
+  int bestScore = -100000;
+  for (int i = 0; i < availablePorts.length; i++) {
+    int candidateScore = scoreForceSensorPortCandidate(availablePorts[i]);
+    if (candidateScore > bestScore) {
+      bestScore = candidateScore;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex >= 0 ? availablePorts[bestIndex] : "";
+}
+
+int scoreForceSensorPortCandidate(String portName) {
+  if (portName == null) {
+    return -100000;
+  }
+
+  String normalized = trim(portName).toLowerCase();
+  int score = 0;
+  if (normalized.indexOf("usb") >= 0 || normalized.indexOf("acm") >= 0 || normalized.indexOf("wch") >= 0 ||
+    normalized.indexOf("cp210") >= 0 || normalized.indexOf("ch340") >= 0 || normalized.indexOf("serial") >= 0) {
+    score += 500;
+  }
+  if (normalized.startsWith("com")) {
+    score += 200;
+    score += extractForceSensorComPortNumber(normalized);
+  }
+  return score;
+}
+
+int extractForceSensorComPortNumber(String normalizedPortName) {
+  if (normalizedPortName == null || !normalizedPortName.startsWith("com")) {
+    return 0;
+  }
+
+  String portNumber = normalizedPortName.substring(3);
+  try {
+    return Integer.parseInt(portNumber);
+  } catch (Exception ex) {
+    return 0;
+  }
+}
+
+boolean isCurrentForceSensorPortStillAvailable() {
+  if (forceSensorResolvedPort.length() == 0) {
+    return forceSensorPort == null;
+  }
+
+  String[] availablePorts = Serial.list();
+  for (int i = 0; i < availablePorts.length; i++) {
+    if (availablePorts[i].equalsIgnoreCase(forceSensorResolvedPort)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void handleUnexpectedForceSensorDisconnect(String reason) {
+  int now = millis();
+  requestForceSensorAutoNudgeStop(reason, now);
+  if (measureUseCaseEnabled) {
+    disableMeasureUseCase("Measure aborted: " + reason + ".");
+  }
+  if (forceSensorStopRobotOnDisconnect && canQueueBridgeRequest()) {
+    sendRobotStopCommand();
+  }
+  closeForceSensorPort();
+  lastForceSensorResponseMs = -1;
+  forceSensorHadLiveData = false;
+  forceSensorStatus = reason;
 }
 
 // Traduit la force mesuree en une consigne de vitesse outil en Z.
@@ -641,7 +753,7 @@ void drawForceSensorCard(float x, float y, float w, float h) {
 
   fill(accent);
   textSize(12);
-  text("CAPTEUR DE FORCE - " + forceSensorComPort, x + 14, y + 10);
+  text("CAPTEUR DE FORCE - " + getForceSensorRequestedPortLabel(), x + 14, y + 10);
 
   fill(245);
   textSize(28);
